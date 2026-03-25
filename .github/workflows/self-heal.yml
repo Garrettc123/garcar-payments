@@ -1,0 +1,42 @@
+name: 🔧 Self-Heal Pipeline
+
+on:
+  workflow_run:
+    workflows: ['🩺 Health Monitor']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      force_redeploy:
+        description: 'Force redeploy even if healthy'
+        required: false
+        default: 'false'
+
+jobs:
+  self-heal:
+    name: Auto-recover garcar-payments
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Redeploy service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          echo "🔧 Self-healing: redeploying garcar-payments"
+          railway up --service garcar-payments
+
+      - name: Notify Linear recovery
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+        run: |
+          curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $LINEAR_API_KEY" \
+            -d '{"query":"mutation { issueCreate(input: { title: \"✅ garcar-payments self-healed and redeployed\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 3, description: \"Self-heal workflow triggered and redeployed successfully.\" }) { success } }"}' \
+            || echo "Linear notify optional"
