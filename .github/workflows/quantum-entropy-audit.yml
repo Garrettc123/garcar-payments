@@ -1,8 +1,8 @@
-name: ⚛️ Quantum Entropy Audit
+name: "Quantum Entropy Audit"
 
 on:
-  schedule:
-    - cron: '0 6 * * *'  # daily at 6am UTC
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -76,14 +76,14 @@ jobs:
 
           # ── 5. Notify Linear with full entropy report
           summary = "\n".join(f"- {r}" for r in report)
-          if linear_key:
+          if linear_key and linear_team:
               requests.post(
                   "https://api.linear.app/graphql",
                   headers={"Content-Type": "application/json", "Authorization": f"Bearer {linear_key}"},
                   json={"query": f"""
                       mutation {{
                           issueCreate(input: {{
-                              title: "[⚛️ Entropy] Daily cryptographic audit passed",
+                              title: "[Entropy] Daily cryptographic audit passed",
                               teamId: \"{linear_team}\",
                               priority: 4,
                               description: "## Quantum Entropy Audit\n\n{summary}"
@@ -92,5 +92,7 @@ jobs:
                   """},
                   timeout=15,
               )
+          else:
+              print("[AUDIT] LINEAR_API_KEY or LINEAR_TEAM_ID not configured — skipping Linear notification")
           print("[AUDIT] Complete")
           EOF

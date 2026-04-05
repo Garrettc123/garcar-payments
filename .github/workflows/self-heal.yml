@@ -1,9 +1,8 @@
-name: 🔧 Self-Heal Pipeline
+name: "\U0001F527 Self-Heal Pipeline"
 
 on:
-  workflow_run:
-    workflows: ['🩺 Health Monitor']
-    types: [completed]
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_redeploy:
@@ -15,7 +14,6 @@ jobs:
   self-heal:
     name: Auto-recover garcar-payments
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'failure' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +25,11 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          echo "🔧 Self-healing: redeploying garcar-payments"
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "⚠️ RAILWAY_TOKEN not configured — skipping"
+            exit 0
+          fi
+          echo "Self-healing: redeploying garcar-payments"
           railway up --service garcar-payments
 
       - name: Notify Linear recovery
@@ -35,8 +37,16 @@ jobs:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
         run: |
+          if [ -z "$LINEAR_API_KEY" ]; then
+            echo "⚠️ LINEAR_API_KEY not configured — skipping"
+            exit 0
+          fi
+          if [ -z "$LINEAR_TEAM_ID" ]; then
+            echo "⚠️ LINEAR_TEAM_ID not configured — skipping"
+            exit 0
+          fi
           curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $LINEAR_API_KEY" \
-            -d '{"query":"mutation { issueCreate(input: { title: \"✅ garcar-payments self-healed and redeployed\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 3, description: \"Self-heal workflow triggered and redeployed successfully.\" }) { success } }"}' \
+            -d '{"query":"mutation { issueCreate(input: { title: \"garcar-payments self-healed and redeployed\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 3, description: \"Self-heal workflow triggered and redeployed successfully.\" }) { success } }"}' \
             || echo "Linear notify optional"

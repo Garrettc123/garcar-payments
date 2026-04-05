@@ -1,8 +1,8 @@
-name: 🩺 Health Monitor
+name: "\U0001FA7A Health Monitor"
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # every 15 minutes
+    - cron: '23 7 * * *'  # once daily at 07:23 UTC
   workflow_dispatch:
 
 jobs:
@@ -16,14 +16,22 @@ jobs:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
         run: |
+          if [ -z "$SERVICE_URL" ]; then
+            echo "⚠️ GARCAR_PAYMENTS_URL not configured — skipping"
+            exit 0
+          fi
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" --max-time 10 || echo "000")
           echo "Health status: $STATUS"
           if [ "$STATUS" != "200" ]; then
-            echo "⚠️ Health check FAILED (HTTP $STATUS) — creating Linear alert"
+            echo "Health check FAILED (HTTP $STATUS)"
+            if [ -z "$LINEAR_API_KEY" ] || [ -z "$LINEAR_TEAM_ID" ]; then
+              echo "⚠️ LINEAR_API_KEY or LINEAR_TEAM_ID not configured — skipping Linear alert"
+              exit 0
+            fi
             curl -s -X POST https://api.linear.app/graphql \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $LINEAR_API_KEY" \
-              -d '{"query":"mutation { issueCreate(input: { title: \"🚨 garcar-payments DOWN (HTTP '$STATUS')\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 1, description: \"Health check failed. Immediate action required. URL: '$SERVICE_URL'\" }) { success issue { identifier url } } }"}'
+              -d '{"query":"mutation { issueCreate(input: { title: \"garcar-payments DOWN (HTTP '$STATUS')\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 1, description: \"Health check failed. Immediate action required. URL: '$SERVICE_URL'\" }) { success issue { identifier url } } }"}'
           else
-            echo "✅ Service healthy"
+            echo "Service healthy"
           fi

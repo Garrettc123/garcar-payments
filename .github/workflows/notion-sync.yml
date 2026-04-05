@@ -1,8 +1,8 @@
-name: 📚 Notion Revenue Sync
+name: "\U0001F4DA Notion Revenue Sync"
 
 on:
   schedule:
-    - cron: '0 * * * *'  # every hour
+    - cron: '13 */6 * * *'  # every 6 hours at :13 past
   workflow_dispatch:
 
 jobs:
@@ -10,18 +10,44 @@ jobs:
     name: Sync MRR to Notion
     runs-on: ubuntu-latest
     steps:
+      - name: Check required secrets
+        env:
+          GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
+        run: |
+          if [ -z "$GARCAR_PAYMENTS_URL" ]; then
+            echo "⚠️ GARCAR_PAYMENTS_URL not configured — skipping"
+            echo "SKIP=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          if [ -z "$NOTION_TOKEN" ]; then
+            echo "⚠️ NOTION_TOKEN not configured — skipping"
+            echo "SKIP=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          if [ -z "$NOTION_REVENUE_DB_ID" ]; then
+            echo "⚠️ NOTION_REVENUE_DB_ID not configured — skipping"
+            echo "SKIP=true" >> $GITHUB_ENV
+            exit 0
+          fi
+
       - name: Checkout
+        if: env.SKIP != 'true'
         uses: actions/checkout@v4
 
       - name: Setup Python
+        if: env.SKIP != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: env.SKIP != 'true'
         run: pip install requests
 
       - name: Sync MRR to Notion
+        if: env.SKIP != 'true'
         env:
           GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -61,7 +87,7 @@ jobs:
           }
           resp = requests.post("https://api.notion.com/v1/pages", headers=notion_headers, json=payload)
           if resp.status_code in (200, 201):
-              print(f"✅ Notion synced: MRR=${mrr}")
+              print(f"Notion synced: MRR=${mrr}")
           else:
-              print(f"⚠️ Notion sync failed: {resp.status_code} {resp.text}")
+              print(f"Notion sync failed: {resp.status_code} {resp.text}")
           EOF
