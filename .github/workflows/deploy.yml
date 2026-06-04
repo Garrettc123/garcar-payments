@@ -1,108 +1,95 @@
-name: "\U0001F680 Deploy to Railway (KEYLESS OIDC)"
+name: 🚀 Deploy Garcar Payments — Production
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-
-permissions:
-  id-token: write   # OIDC federated identity
-  contents: read
+    inputs:
+      reason:
+        description: 'Deploy reason'
+        required: false
+        default: 'Manual deploy'
 
 jobs:
-  bootstrap-secrets:
-    name: "\U0001F513 Zero-Trust Secret Bootstrap"
-    runs-on: ubuntu-latest
-    outputs:
-      secrets_ready: ${{ steps.doppler.outputs.ready }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Doppler CLI
-        run: |
-          curl -Ls https://cli.doppler.com/install.sh | sh
-          echo "[KEYLESS] Doppler CLI installed"
-
-      - name: Authenticate Doppler via OIDC (keyless)
-        id: doppler
-        env:
-          DOPPLER_SERVICE_TOKEN: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
-        run: |
-          # Doppler as secret orchestrator — one token seeds all others
-          # In full OIDC mode: replace DOPPLER_SERVICE_TOKEN with GitHub OIDC JWT
-          # exchanged for short-lived Doppler token (zero long-lived secrets)
-          if [ -n "$DOPPLER_SERVICE_TOKEN" ]; then
-            doppler secrets download --no-file --format env > /tmp/garcar.env
-            echo "[KEYLESS] Secrets bootstrapped from Doppler"
-            echo "ready=true" >> $GITHUB_OUTPUT
-          else
-            echo "[KEYLESS] Running in OIDC-only mode — secrets from environment"
-            echo "ready=true" >> $GITHUB_OUTPUT
-          fi
-
-  deploy:
-    name: "\U0001F680 Deploy garcar-payments"
-    needs: bootstrap-secrets
+  test:
+    name: ✅ Test Suite
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest httpx
 
-      - name: Cryptographic integrity check
+      - name: Run tests
         run: |
-          python - <<'EOF'
-          import hashlib, json, pathlib
-          manifest = {}
-          for f in ["backend/payments.py", "requirements.txt"]:
-              data = pathlib.Path(f).read_bytes()
-              manifest[f] = hashlib.sha3_256(data).hexdigest()
-          print("[INTEGRITY] SHA3-256 manifest:")
-          for k, v in manifest.items():
-              print(f"  {k}: {v}")
-          pathlib.Path("deploy-manifest.json").write_text(json.dumps(manifest, indent=2))
-          EOF
+          if [ -d tests ]; then
+            pytest tests/ -v --tb=short
+          else
+            echo "No tests dir yet — skipping (non-blocking)"
+          fi
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
 
-      - name: Import check
-        run: python -c "import fastapi, stripe, requests; print('All imports OK')"
+  security-scan:
+    name: 🔒 Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for secrets
+        run: |
+          if grep -r 'sk_live_\|sk_test_[a-zA-Z0-9]\{20,\}\|whsec_[a-zA-Z0-9]\{20,\}' --include='*.py' --include='*.yml' --include='*.json' . ; then
+            echo '❌ REAL SECRETS FOUND IN CODE — BLOCKING DEPLOY'
+            exit 1
+          else
+            echo '✅ No hardcoded secrets found'
+          fi
+
+  deploy:
+    name: 🚂 Deploy to Railway
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
       - name: Deploy to Railway
+        run: railway up --service garcar-payments --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "⚠️ RAILWAY_TOKEN not configured — skipping"
-            exit 0
-          fi
-          railway up --service garcar-payments
 
-      - name: Notify Linear — deploy confirmed
-        env:
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+      - name: Verify deployment health
         run: |
-          if [ -z "$LINEAR_API_KEY" ]; then
-            echo "⚠️ LINEAR_API_KEY not configured — skipping"
-            exit 0
+          sleep 30
+          DEPLOY_URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
+          if [ -n "$DEPLOY_URL" ]; then
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOY_URL/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Health check passed — $DEPLOY_URL/health → $STATUS"
+            else
+              echo "⚠️ Health check returned $STATUS — check Railway logs"
+            fi
+          else
+            echo "⚠️ RAILWAY_DEPLOY_URL secret not set — skipping health check"
           fi
-          if [ -z "$LINEAR_TEAM_ID" ]; then
-            echo "⚠️ LINEAR_TEAM_ID not configured — skipping"
-            exit 0
-          fi
-          SHA=$(git rev-parse --short HEAD)
-          curl -s -X POST https://api.linear.app/graphql \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $LINEAR_API_KEY" \
-            -d "{\"query\":\"mutation { issueCreate(input: { title: \\\"[Deploy] garcar-payments $SHA\\\", teamId: \\\"$LINEAR_TEAM_ID\\\", priority: 4, description: \\\"Automated Railway deploy. Commit: $SHA. Integrity verified.\\\" }) { success issue { identifier url } } }\"}" \
-            || echo "[DEPLOY] Linear notify optional"
+        env:
+          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
+
+      - name: 📣 Notify deployment complete
+        run: |
+          echo "🚀 Garcar Payments deployed to production"
+          echo "   MARS API landing: ${{ secrets.RAILWAY_DEPLOY_URL }}/mars/"
+          echo "   Stripe webhook:   ${{ secrets.RAILWAY_DEPLOY_URL }}/payments/webhook/stripe"
+          echo "   MRR dashboard:    ${{ secrets.RAILWAY_DEPLOY_URL }}/payments/mrr"
+          echo "   Health:           ${{ secrets.RAILWAY_DEPLOY_URL }}/health"

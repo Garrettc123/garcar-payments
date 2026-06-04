@@ -1,37 +1,50 @@
-name: "\U0001FA7A Health Monitor"
+name: 💓 Garcar Payments Health Monitor
 
 on:
   schedule:
-    - cron: '23 7 * * *'  # once daily at 07:23 UTC
+    - cron: '*/15 * * * *'  # every 15 minutes
   workflow_dispatch:
 
 jobs:
   health-check:
-    name: Check garcar-payments health
+    name: 💓 Health Check
     runs-on: ubuntu-latest
     steps:
-      - name: Health check
-        env:
-          SERVICE_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+      - name: Check /health endpoint
         run: |
-          if [ -z "$SERVICE_URL" ]; then
-            echo "⚠️ GARCAR_PAYMENTS_URL not configured — skipping"
+          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
+          if [ -z "$URL" ]; then
+            echo "⚠️ RAILWAY_DEPLOY_URL not set — skipping"
             exit 0
           fi
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" --max-time 10 || echo "000")
-          echo "Health status: $STATUS"
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || echo "000")
+          echo "Health → $STATUS"
           if [ "$STATUS" != "200" ]; then
-            echo "Health check FAILED (HTTP $STATUS)"
-            if [ -z "$LINEAR_API_KEY" ] || [ -z "$LINEAR_TEAM_ID" ]; then
-              echo "⚠️ LINEAR_API_KEY or LINEAR_TEAM_ID not configured — skipping Linear alert"
-              exit 0
-            fi
-            curl -s -X POST https://api.linear.app/graphql \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $LINEAR_API_KEY" \
-              -d '{"query":"mutation { issueCreate(input: { title: \"garcar-payments DOWN (HTTP '$STATUS')\", teamId: \"'"$LINEAR_TEAM_ID"'\", priority: 1, description: \"Health check failed. Immediate action required. URL: '$SERVICE_URL'\" }) { success issue { identifier url } } }"}'
+            echo "❌ Service down (HTTP $STATUS)!"
+            exit 1
           else
-            echo "Service healthy"
+            echo "✅ Service healthy"
           fi
+        env:
+          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
+
+      - name: Check MARS API tiers endpoint
+        run: |
+          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
+          if [ -z "$URL" ]; then exit 0; fi
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$URL/mars/api/tiers" || echo "000")
+          echo "MARS tiers → $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "⚠️ MARS tiers endpoint returned $STATUS"
+          fi
+        env:
+          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
+
+      - name: Check MRR endpoint
+        run: |
+          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
+          if [ -z "$URL" ]; then exit 0; fi
+          RESULT=$(curl -s "$URL/payments/mrr" || echo "{}")
+          echo "MRR data: $RESULT"
+        env:
+          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
