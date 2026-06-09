@@ -1,0 +1,36 @@
+name: Register Stripe Webhook
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy garcar-payments"]
+    types: [completed]
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    env:
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+    steps:
+      - name: Install Stripe CLI
+        run: |
+          curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" | sudo tee /etc/apt/sources.list.d/stripe.list
+          sudo apt-get update -qq
+          sudo apt-get install -y stripe
+
+      - name: Check existing webhook
+        id: check
+        run: |
+          EXISTING=$(stripe webhook_endpoints list --api-key "$STRIPE_SECRET_KEY" --format json | jq -r ".data[] | select(.url == \"${APP_BASE_URL}/stripe-webhook\") | .id" | head -n 1)
+          echo "existing_id=$EXISTING" >> "$GITHUB_OUTPUT"
+
+      - name: Register webhook
+        if: steps.check.outputs.existing_id == ''
+        run: |
+          stripe webhook_endpoints create \
+            --url "${APP_BASE_URL}/stripe-webhook" \
+            --enabled-events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted \
+            --api-key "$STRIPE_SECRET_KEY"

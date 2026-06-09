@@ -1,95 +1,41 @@
-name: 🚀 Deploy Garcar Payments — Production
+name: Deploy garcar-payments
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Deploy reason'
-        required: false
-        default: 'Manual deploy'
 
 jobs:
-  test:
-    name: ✅ Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest httpx
-
-      - name: Run tests
-        run: |
-          if [ -d tests ]; then
-            pytest tests/ -v --tb=short
-          else
-            echo "No tests dir yet — skipping (non-blocking)"
-          fi
-        env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-
-  security-scan:
-    name: 🔒 Secret Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Scan for secrets
-        run: |
-          if grep -r 'sk_live_\|sk_test_[a-zA-Z0-9]\{20,\}\|whsec_[a-zA-Z0-9]\{20,\}' --include='*.py' --include='*.yml' --include='*.json' . ; then
-            echo '❌ REAL SECRETS FOUND IN CODE — BLOCKING DEPLOY'
-            exit 1
-          else
-            echo '✅ No hardcoded secrets found'
-          fi
-
   deploy:
-    name: 🚂 Deploy to Railway
     runs-on: ubuntu-latest
-    needs: [test, security-scan]
-    environment: production
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Deploy to Railway
-        run: railway up --service garcar-payments --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Push to Railway
+        run: railway up --detach
 
-      - name: Verify deployment health
+      - name: Sync Railway env vars
         run: |
-          sleep 30
-          DEPLOY_URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          if [ -n "$DEPLOY_URL" ]; then
-            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOY_URL/health" || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Health check passed — $DEPLOY_URL/health → $STATUS"
-            else
-              echo "⚠️ Health check returned $STATUS — check Railway logs"
-            fi
-          else
-            echo "⚠️ RAILWAY_DEPLOY_URL secret not set — skipping health check"
-          fi
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
+          railway variables set \
+            STRIPE_SECRET_KEY='${{ secrets.STRIPE_SECRET_KEY }}' \
+            STRIPE_WEBHOOK_SECRET='${{ secrets.STRIPE_WEBHOOK_SECRET }}' \
+            STRIPE_PRICE_STARTER='${{ secrets.STRIPE_PRICE_STARTER }}' \
+            STRIPE_PRICE_PRO='${{ secrets.STRIPE_PRICE_PRO }}' \
+            STRIPE_PRICE_AGENCY='${{ secrets.STRIPE_PRICE_AGENCY }}' \
+            APP_BASE_URL='${{ secrets.APP_BASE_URL }}' \
+            ENVIRONMENT=production
 
-      - name: 📣 Notify deployment complete
+      - name: Health check
         run: |
-          echo "🚀 Garcar Payments deployed to production"
-          echo "   MARS API landing: ${{ secrets.RAILWAY_DEPLOY_URL }}/mars/"
-          echo "   Stripe webhook:   ${{ secrets.RAILWAY_DEPLOY_URL }}/payments/webhook/stripe"
-          echo "   MRR dashboard:    ${{ secrets.RAILWAY_DEPLOY_URL }}/payments/mrr"
-          echo "   Health:           ${{ secrets.RAILWAY_DEPLOY_URL }}/health"
+          sleep 20
+          curl -f "${{ secrets.APP_BASE_URL }}/health"

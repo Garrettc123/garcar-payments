@@ -1,50 +1,19 @@
-name: 💓 Garcar Payments Health Monitor
+name: Health Monitor
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # every 15 minutes
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 jobs:
-  health-check:
-    name: 💓 Health Check
+  ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Check /health endpoint
+      - name: Ping health
         run: |
-          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          if [ -z "$URL" ]; then
-            echo "⚠️ RAILWAY_DEPLOY_URL not set — skipping"
-            exit 0
-          fi
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health" || echo "000")
-          echo "Health → $STATUS"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_BASE_URL }}/health")
+          echo "HTTP $STATUS"
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Service down (HTTP $STATUS)!"
+            echo "HEALTH CHECK FAILED"
             exit 1
-          else
-            echo "✅ Service healthy"
           fi
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
-
-      - name: Check MARS API tiers endpoint
-        run: |
-          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          if [ -z "$URL" ]; then exit 0; fi
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$URL/mars/api/tiers" || echo "000")
-          echo "MARS tiers → $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "⚠️ MARS tiers endpoint returned $STATUS"
-          fi
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
-
-      - name: Check MRR endpoint
-        run: |
-          URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          if [ -z "$URL" ]; then exit 0; fi
-          RESULT=$(curl -s "$URL/payments/mrr" || echo "{}")
-          echo "MRR data: $RESULT"
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
