@@ -13,18 +13,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Push to Railway
+      - name: Deploy
         run: railway up --detach
 
-      - name: Sync Railway env vars
+      - name: Sync secrets to Railway
         run: |
           railway variables set \
             STRIPE_SECRET_KEY='${{ secrets.STRIPE_SECRET_KEY }}' \
@@ -37,5 +36,6 @@ jobs:
 
       - name: Health check
         run: |
-          sleep 20
-          curl -f "${{ secrets.APP_BASE_URL }}/health"
+          sleep 25
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_BASE_URL }}/health")
+          [ "$STATUS" = "200" ] && echo "✅ Healthy" || (echo "❌ Health check failed: HTTP $STATUS" && exit 1)

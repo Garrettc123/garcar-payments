@@ -9,11 +9,8 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping health
+      - name: Health check
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_BASE_URL }}/health")
           echo "HTTP $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "HEALTH CHECK FAILED"
-            exit 1
-          fi
+          [ "$STATUS" = "200" ] && echo "✅ Service healthy" || (echo "❌ Service down" && exit 1)
