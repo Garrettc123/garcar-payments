@@ -3,34 +3,44 @@ name: Register Stripe Webhook
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["Deploy garcar-payments"]
+    workflows: ["Deploy to Railway"]
     types: [completed]
 
 jobs:
-  register:
+  register-webhook:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    env:
-      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-      APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
     steps:
-      - name: Install Stripe CLI
+      - name: Register or update webhook endpoint
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null
-          echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" | sudo tee /etc/apt/sources.list.d/stripe.list
-          sudo apt-get update -qq
-          sudo apt-get install -y stripe
+          WEBHOOK_URL="$APP_BASE_URL/stripe-webhook"
+          echo "Registering webhook at: $WEBHOOK_URL"
 
-      - name: Check existing webhook
-        id: check
-        run: |
-          EXISTING=$(stripe webhook_endpoints list --api-key "$STRIPE_SECRET_KEY" --format json | jq -r ".data[] | select(.url == \"${APP_BASE_URL}/stripe-webhook\") | .id" | head -n 1)
-          echo "existing_id=$EXISTING" >> "$GITHUB_OUTPUT"
+          RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
+            -u "$STRIPE_SECRET_KEY:" \
+            -d "url=$WEBHOOK_URL" \
+            -d "enabled_events[]=payment_intent.succeeded" \
+            -d "enabled_events[]=payment_intent.payment_failed" \
+            -d "enabled_events[]=checkout.session.completed" \
+            -d "enabled_events[]=customer.subscription.created" \
+            -d "enabled_events[]=customer.subscription.updated" \
+            -d "enabled_events[]=customer.subscription.deleted" \
+            -d "enabled_events[]=invoice.payment_succeeded" \
+            -d "enabled_events[]=invoice.payment_failed")
 
-      - name: Register webhook
-        if: steps.check.outputs.existing_id == ''
-        run: |
-          stripe webhook_endpoints create \
-            --url "${APP_BASE_URL}/stripe-webhook" \
-            --enabled-events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted \
-            --api-key "$STRIPE_SECRET_KEY"
+          echo "$RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if 'secret' in data:
+    print('Webhook ID: ' + data['id'])
+    print('Signing Secret: ' + data['secret'])
+    print('')
+    print('ACTION REQUIRED: Set STRIPE_WEBHOOK_SECRET=' + data['secret'] + ' in Railway dashboard')
+elif 'error' in data:
+    print('ERROR:', data['error']['message'])
+    sys.exit(1)
+"

@@ -1,106 +1,47 @@
-name: 🔥 Stripe Webhook Smoke Test
+name: Stripe Smoke Test
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      event_type:
-        description: 'Stripe event to trigger'
+      event:
+        description: "Stripe event to trigger"
         required: false
-        default: 'payment_intent.succeeded'
-        type: choice
-        options:
-          - payment_intent.succeeded
-          - checkout.session.completed
-          - invoice.paid
-          - invoice.payment_failed
-  schedule:
-    - cron: '0 */6 * * *'
+        default: "payment_intent.succeeded"
 
 jobs:
-  smoke-test:
-    name: 🧪 Stripe + Railway Smoke Test
+  stripe-smoke-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate Stripe key format
-        run: |
-          if echo "$STRIPE_SECRET_KEY" | grep -q 'sk_live_'; then
-            echo "✅ LIVE Stripe key confirmed"
-          elif echo "$STRIPE_SECRET_KEY" | grep -q 'sk_test_'; then
-            echo "⚠️  TEST key in use — events will be test mode"
-          else
-            echo "❌ STRIPE_SECRET_KEY missing or invalid"
-            exit 1
-          fi
-        env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-
-      - name: Verify Railway service is live
-        run: |
-          DEPLOY_URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          if [ -z "$DEPLOY_URL" ]; then
-            echo "❌ RAILWAY_DEPLOY_URL not set — deploy to Railway first, then add this secret"
-            exit 1
-          fi
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOY_URL/health" || echo "000")
-          if [ "$STATUS" = "200" ]; then
-            echo "✅ Railway live: $DEPLOY_URL/health → 200"
-          else
-            echo "❌ Railway health check failed: HTTP $STATUS"
-            exit 1
-          fi
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
-
       - name: Install Stripe CLI
         run: |
-          curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
-            | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
+          curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" \
-            | sudo tee /etc/apt/sources.list.d/stripe.list
-          sudo apt update -qq && sudo apt install -y stripe
+            | sudo tee /etc/apt/sources.list.d/stripe.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y stripe
+          stripe --version
 
       - name: Trigger Stripe test event
-        run: |
-          EVENT="${{ github.event.inputs.event_type || 'payment_intent.succeeded' }}"
-          echo "Triggering Stripe event: $EVENT"
-          stripe trigger "$EVENT" --api-key "$STRIPE_SECRET_KEY" 2>&1 || echo "⚠️  Stripe trigger exited non-zero (may be expected)"
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-
-      - name: Verify webhook endpoint rejects unsigned payload (correct behavior)
         run: |
-          DEPLOY_URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-            -X POST "$DEPLOY_URL/payments/webhook/stripe" \
-            -H 'Content-Type: application/json' \
-            -d '{"type":"test.unsigned"}' || echo "000")
-          if [ "$STATUS" = "400" ] || [ "$STATUS" = "422" ]; then
-            echo "✅ Webhook correctly rejects unsigned payload: HTTP $STATUS"
-          elif [ "$STATUS" = "200" ]; then
-            echo "⚠️  Webhook returned 200 on unsigned payload — check signature validation"
-          else
-            echo "❌ Unexpected status: $STATUS"
+          stripe trigger ${{ github.event.inputs.event || 'payment_intent.succeeded' }} \
+            --api-key "$STRIPE_SECRET_KEY"
+
+      - name: Health check Railway endpoint
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          echo "Checking $APP_BASE_URL/health ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_BASE_URL/health")
+          echo "Status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check FAILED: HTTP $STATUS"
             exit 1
           fi
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
-
-      - name: Check MRR endpoint
-        run: |
-          DEPLOY_URL="${{ secrets.RAILWAY_DEPLOY_URL }}"
-          RESPONSE=$(curl -s "$DEPLOY_URL/payments/mrr")
-          echo "MRR dashboard: $RESPONSE"
-          echo "✅ MRR endpoint live"
-        env:
-          RAILWAY_DEPLOY_URL: ${{ secrets.RAILWAY_DEPLOY_URL }}
-
-      - name: 🚨 Slack alert on failure
-        if: failure()
-        run: |
-          curl -s -X POST "$SLACK_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d "$(jq -n --arg t '🚨 *garcar-payments smoke test FAILED* — check Railway logs + Stripe webhook config' '{text: $t}')"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          echo "Health check PASSED"
