@@ -1,4 +1,4 @@
-name: Deploy to Railway
+name: Deploy to Railway (Production)
 
 on:
   push:
@@ -7,35 +7,55 @@ on:
 
 jobs:
   deploy:
+    name: Deploy garcar-payments → Railway
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Sync Stripe env vars to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway variables set \
+            STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}" \
+            STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}" \
+            STRIPE_PRICE_STARTER="${{ secrets.STRIPE_PRICE_STARTER }}" \
+            STRIPE_PRICE_PRO="${{ secrets.STRIPE_PRICE_PRO }}" \
+            STRIPE_PRICE_AGENCY="${{ secrets.STRIPE_PRICE_AGENCY }}" \
+            APP_BASE_URL="${{ secrets.APP_BASE_URL }}" \
+            NODE_ENV="production" \
+            --service ${{ secrets.RAILWAY_SERVICE_ID }} \
+            --project ${{ secrets.RAILWAY_PROJECT_ID }} \
+          || echo "⚠️  Variable sync skipped — RAILWAY_SERVICE_ID/PROJECT_ID not set yet"
+
       - name: Deploy to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --detach
+        run: |
+          railway up \
+            --service ${{ secrets.RAILWAY_SERVICE_ID }} \
+            --detach
 
-      - name: Wait for deployment
-        run: sleep 20
+      - name: Wait for Railway startup
+        run: sleep 30
 
-      - name: Health check
+      - name: Verify deployment health
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
           for i in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_BASE_URL/health")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_BASE_URL}/health" 2>/dev/null || echo "000")
             echo "Attempt $i — HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
-              echo "Deployment healthy."
+              echo "✅ Deployment healthy."
               exit 0
             fi
             sleep 10
           done
-          echo "Deployment health check failed after 5 attempts."
+          echo "❌ Health check failed after 5 attempts."
           exit 1
