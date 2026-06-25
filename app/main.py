@@ -1,20 +1,20 @@
 import os
 import json
-import httpx
 import stripe
+import httpx
 from contextlib import asynccontextmanager
-from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import IntegrityError
-from app.db import SessionLocal, BillingEvent, Subscription, init_db
+from app.db import SessionLocal, BillingEvent, init_db
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+DISPATCH_URL = os.getenv("DISPATCH_URL", "")
 
 PRICE_MAP = {
     "starter": os.getenv("STRIPE_PRICE_STARTER"),
-    "pro": os.getenv("STRIPE_PRICE_PRO"),
-    "agency": os.getenv("STRIPE_PRICE_AGENCY"),
+    "pro":     os.getenv("STRIPE_PRICE_PRO"),
+    "agency":  os.getenv("STRIPE_PRICE_AGENCY"),
 }
 
 
@@ -34,13 +34,15 @@ app.add_middleware(
 )
 
 
-async def notify_slack(msg: str) -> None:
-    url = os.getenv("SLACK_WEBHOOK_URL", "")
-    if not url:
+async def _emit_dispatch(event_type: str, payload: dict) -> None:
+    if not DISPATCH_URL:
         return
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json={"text": msg}, timeout=5)
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            await c.post(
+                f"{DISPATCH_URL}/dispatch",
+                json={"event_type": event_type, "source_system": "garcar-payments", "payload": payload},
+            )
     except Exception:
         pass
 
@@ -55,24 +57,6 @@ def pricing():
     return {"plans": [
         {"key": k, "price_id": v} for k, v in PRICE_MAP.items() if v
     ]}
-
-
-@app.get("/mrr")
-def mrr_summary():
-    db = SessionLocal()
-    try:
-        active = db.query(Subscription).filter(Subscription.status == "active").all()
-        total_mrr = sum(s.mrr for s in active)
-        return {
-            "active_subscriptions": len(active),
-            "mrr_usd": round(total_mrr, 2),
-            "subscriptions": [
-                {"id": s.stripe_subscription_id, "plan": s.plan, "mrr": s.mrr, "status": s.status}
-                for s in active
-            ],
-        }
-    finally:
-        db.close()
 
 
 @app.post("/create-checkout-session")
@@ -97,7 +81,7 @@ def create_checkout_session(plan: str, email: str):
 
 
 @app.post("/stripe-webhook")
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, background: BackgroundTasks):
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
     secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -111,17 +95,14 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid webhook")
 
     obj = event.get("data", {}).get("object", {})
-    event_type = event.get("type", "unknown")
-    sub_id = obj.get("id", "")
-
     db = SessionLocal()
     try:
         record = BillingEvent(
             event_id=event.get("id", "unknown"),
-            event_type=event_type,
+            event_type=event.get("type", "unknown"),
             customer_id=obj.get("customer"),
-            subscription_id=obj.get("subscription") or sub_id,
-            invoice_id=obj.get("invoice") or sub_id,
+            subscription_id=obj.get("subscription"),
+            invoice_id=obj.get("invoice") or obj.get("id"),
             payload=payload.decode("utf-8"),
         )
         db.add(record)
@@ -131,87 +112,18 @@ async def stripe_webhook(request: Request):
     finally:
         db.close()
 
-    if event_type == "customer.subscription.created":
-        items = obj.get("items", {}).get("data", [])
-        unit_amount = items[0].get("price", {}).get("unit_amount", 0) if items else 0
-        plan = obj.get("metadata", {}).get("plan") or (items[0].get("price", {}).get("id") if items else None)
-        period_end = obj.get("current_period_end")
-        if sub_id:
-            db2 = SessionLocal()
-            try:
-                existing = db2.query(Subscription).filter(
-                    Subscription.stripe_subscription_id == sub_id
-                ).first()
-                if existing:
-                    existing.status = obj.get("status", "active")
-                    existing.mrr = unit_amount / 100
-                    existing.plan = plan
-                else:
-                    db2.add(Subscription(
-                        stripe_subscription_id=sub_id,
-                        stripe_customer_id=str(obj.get("customer", "")),
-                        status=obj.get("status", "active"),
-                        plan=plan,
-                        mrr=unit_amount / 100,
-                        current_period_end=datetime.utcfromtimestamp(period_end) if period_end else None,
-                    ))
-                db2.commit()
-            except Exception:
-                db2.rollback()
-            finally:
-                db2.close()
+    background.add_task(
+        _emit_dispatch,
+        f"stripe.{event.get('type', 'unknown').replace('.', '_')}",
+        {
+            "event_id": event.get("id"),
+            "event_type": event.get("type"),
+            "customer_id": obj.get("customer"),
+            "subscription_id": obj.get("subscription"),
+        },
+    )
 
-    elif event_type == "customer.subscription.updated":
-        items = obj.get("items", {}).get("data", [])
-        unit_amount = items[0].get("price", {}).get("unit_amount", 0) if items else 0
-        period_end = obj.get("current_period_end")
-        if sub_id:
-            db2 = SessionLocal()
-            try:
-                row = db2.query(Subscription).filter(
-                    Subscription.stripe_subscription_id == sub_id
-                ).first()
-                if row:
-                    row.status = obj.get("status", row.status)
-                    row.mrr = unit_amount / 100
-                    if period_end:
-                        row.current_period_end = datetime.utcfromtimestamp(period_end)
-                    db2.commit()
-            except Exception:
-                db2.rollback()
-            finally:
-                db2.close()
-
-    elif event_type == "customer.subscription.deleted":
-        if sub_id:
-            db2 = SessionLocal()
-            try:
-                row = db2.query(Subscription).filter(
-                    Subscription.stripe_subscription_id == sub_id
-                ).first()
-                if row:
-                    row.status = "cancelled"
-                    row.cancelled_at = datetime.utcnow()
-                    row.mrr = 0
-                    db2.commit()
-            except Exception:
-                db2.rollback()
-            finally:
-                db2.close()
-        plan = obj.get("metadata", {}).get("plan", "unknown")
-        await notify_slack(
-            f"\U0001f6a8 CHURN: Subscription `{sub_id}` cancelled. "
-            f"Plan: {plan} | Customer: {obj.get('customer', 'unknown')}"
-        )
-
-    elif event_type == "invoice.payment_failed":
-        amount = (obj.get("amount_due") or 0) / 100
-        await notify_slack(
-            f"⚠️ PAYMENT FAILED: Customer `{obj.get('customer_email', 'unknown')}` "
-            f"| Amount: ${amount:.2f} | Invoice: {obj.get('id', 'unknown')}"
-        )
-
-    return {"received": True, "event_type": event_type}
+    return {"received": True, "event_type": event.get("type")}
 
 
 @app.get("/success")
