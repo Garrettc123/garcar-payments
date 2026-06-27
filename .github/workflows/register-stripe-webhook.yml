@@ -16,6 +16,11 @@ jobs:
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
         run: |
+          if [ -z "$STRIPE_SECRET_KEY" ]; then
+            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping webhook registration"
+            exit 0
+          fi
+
           WEBHOOK_URL="https://garcar-payments.vercel.app/payments/webhook/stripe"
           echo "Registering webhook at: $WEBHOOK_URL"
 
