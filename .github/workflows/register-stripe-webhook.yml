@@ -15,9 +15,8 @@ jobs:
       - name: Register or update webhook endpoint
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          WEBHOOK_URL="$APP_BASE_URL/stripe-webhook"
+          WEBHOOK_URL="https://garcar-payments.vercel.app/payments/webhook/stripe"
           echo "Registering webhook at: $WEBHOOK_URL"
 
           RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
@@ -29,7 +28,7 @@ jobs:
             -d "enabled_events[]=customer.subscription.created" \
             -d "enabled_events[]=customer.subscription.updated" \
             -d "enabled_events[]=customer.subscription.deleted" \
-            -d "enabled_events[]=invoice.payment_succeeded" \
+            -d "enabled_events[]=invoice.paid" \
             -d "enabled_events[]=invoice.payment_failed")
 
           echo "$RESPONSE" | python3 -c "
@@ -39,7 +38,7 @@ if 'secret' in data:
     print('Webhook ID: ' + data['id'])
     print('Signing Secret: ' + data['secret'])
     print('')
-    print('ACTION REQUIRED: Set STRIPE_WEBHOOK_SECRET=' + data['secret'] + ' in Railway dashboard')
+    print('ACTION REQUIRED: Set STRIPE_WEBHOOK_SECRET=' + data['secret'] + ' in Vercel dashboard and Railway dashboard')
 elif 'error' in data:
     print('ERROR:', data['error']['message'])
     sys.exit(1)
