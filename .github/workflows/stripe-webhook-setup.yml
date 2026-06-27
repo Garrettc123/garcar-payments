@@ -1,0 +1,48 @@
+name: Stripe Webhook Setup
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Stripe webhook endpoint
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          WEBHOOK_URL="https://garcar-payments.vercel.app/payments/webhook/stripe"
+          echo "Registering: $WEBHOOK_URL"
+
+          RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
+            -u "$STRIPE_SECRET_KEY:" \
+            -d "url=$WEBHOOK_URL" \
+            -d "enabled_events[]=checkout.session.completed" \
+            -d "enabled_events[]=customer.subscription.created" \
+            -d "enabled_events[]=customer.subscription.updated" \
+            -d "enabled_events[]=customer.subscription.deleted" \
+            -d "enabled_events[]=invoice.paid" \
+            -d "enabled_events[]=invoice.payment_failed" \
+            -d "enabled_events[]=payment_intent.succeeded" \
+            -d "enabled_events[]=payment_intent.payment_failed")
+
+          echo "Response: $RESPONSE"
+
+          echo "$RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if 'secret' in data:
+    print('SUCCESS')
+    print('Webhook ID:', data['id'])
+    print('Signing Secret:', data['secret'])
+    print()
+    print('=== ACTION REQUIRED ===')
+    print('Set this in Vercel environment variables for garcar-payments:')
+    print('  STRIPE_WEBHOOK_SECRET=' + data['secret'])
+elif 'error' in data:
+    print('ERROR:', data['error']['message'])
+    sys.exit(1)
+else:
+    print('Unexpected response:', data)
+    sys.exit(1)
+"
