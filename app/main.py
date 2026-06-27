@@ -16,34 +16,36 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 # Canonical sellable Garcar Enterprise offers.
 # One-time offers power the public roofing/home-services landing page.
 # Subscription offers support the recurring SaaS / managed-automation ladder.
+# Each price_id defaults to the matching live price already present in the
+# Garcar Stripe account; set STRIPE_PRICE_* env vars to override.
 OFFER_CATALOG: dict[str, dict[str, Optional[str]]] = {
     "audit": {
         "name": "Operational Audit",
-        "price_id": os.getenv("STRIPE_PRICE_AUDIT"),
+        "price_id": os.getenv("STRIPE_PRICE_AUDIT", "price_1TGmo7FKGbk21LK5szrPJkRl"),
         "mode": "payment",
         "description": "$197 lead-leak / missed-call operational audit",
     },
     "dealdesk": {
         "name": "AI Deal Desk Setup",
-        "price_id": os.getenv("STRIPE_PRICE_DEALDESK"),
+        "price_id": os.getenv("STRIPE_PRICE_DEALDESK", "price_1T6lv3FKGbk21LK5J6HCIw2E"),
         "mode": "payment",
         "description": "$497 AI call-handling + CRM setup package",
     },
     "starter": {
         "name": "Starter Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_STARTER"),
+        "price_id": os.getenv("STRIPE_PRICE_STARTER", "price_1TlkwBFKGbk21LK5ZrbIlV6t"),
         "mode": "subscription",
         "description": "Starter recurring automation plan",
     },
     "pro": {
         "name": "Pro Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_PRO"),
+        "price_id": os.getenv("STRIPE_PRICE_PRO", "price_1TlkwBFKGbk21LK5egwCuCru"),
         "mode": "subscription",
         "description": "Professional recurring automation plan",
     },
     "agency": {
         "name": "Agency Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_AGENCY"),
+        "price_id": os.getenv("STRIPE_PRICE_AGENCY", "price_1TIeAJFKGbk21LK5emYRdFRm"),
         "mode": "subscription",
         "description": "Agency / managed automation recurring plan",
     },
