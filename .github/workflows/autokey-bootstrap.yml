@@ -1,8 +1,7 @@
 name: Autokey Bootstrap
 # Run this ONCE manually from GitHub Actions UI.
-# It reads GARCAR_MASTER_KEY from secrets and auto-generates
-# all derived Stripe + Railway env vars, writes them back
-# as repo secrets via GitHub API, then triggers deploy.
+# It reads secrets and deploys to Railway, syncs env vars,
+# then registers the Stripe webhook automatically.
 
 on:
   workflow_dispatch:
@@ -27,24 +26,18 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_PRICE_STARTER: ${{ secrets.STRIPE_PRICE_STARTER }}
-          STRIPE_PRICE_PRO: ${{ secrets.STRIPE_PRICE_PRO }}
-          STRIPE_PRICE_AGENCY: ${{ secrets.STRIPE_PRICE_AGENCY }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
           MISSING=""
-          [ -z "$RAILWAY_TOKEN" ]      && MISSING="$MISSING RAILWAY_TOKEN"
-          [ -z "$STRIPE_SECRET_KEY" ]  && MISSING="$MISSING STRIPE_SECRET_KEY"
-          [ -z "$STRIPE_PRICE_STARTER" ] && MISSING="$MISSING STRIPE_PRICE_STARTER"
-          [ -z "$STRIPE_PRICE_PRO" ]   && MISSING="$MISSING STRIPE_PRICE_PRO"
-          [ -z "$STRIPE_PRICE_AGENCY" ] && MISSING="$MISSING STRIPE_PRICE_AGENCY"
-          [ -z "$APP_BASE_URL" ]       && MISSING="$MISSING APP_BASE_URL"
+          [ -z "$RAILWAY_TOKEN" ]     && MISSING="$MISSING RAILWAY_TOKEN"
+          [ -z "$STRIPE_SECRET_KEY" ] && MISSING="$MISSING STRIPE_SECRET_KEY"
+          [ -z "$APP_BASE_URL" ]      && MISSING="$MISSING APP_BASE_URL"
           if [ -n "$MISSING" ]; then
-            echo "❌ Missing secrets:$MISSING"
+            echo "Missing secrets:$MISSING"
             echo "Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 1
           fi
-          echo "✅ All required secrets present"
+          echo "All required secrets present"
 
       # ── Install Railway CLI ──────────────────────────────────────────────
       - name: Setup Node
@@ -69,12 +62,13 @@ jobs:
           railway variables set \
             STRIPE_SECRET_KEY='${{ secrets.STRIPE_SECRET_KEY }}' \
             STRIPE_WEBHOOK_SECRET='${{ secrets.STRIPE_WEBHOOK_SECRET }}' \
-            STRIPE_PRICE_STARTER='${{ secrets.STRIPE_PRICE_STARTER }}' \
-            STRIPE_PRICE_PRO='${{ secrets.STRIPE_PRICE_PRO }}' \
-            STRIPE_PRICE_AGENCY='${{ secrets.STRIPE_PRICE_AGENCY }}' \
+            LINEAR_API_KEY='${{ secrets.LINEAR_API_KEY }}' \
+            NOTION_TOKEN='${{ secrets.NOTION_TOKEN }}' \
+            SUPABASE_URL='${{ secrets.SUPABASE_URL }}' \
+            SUPABASE_SERVICE_KEY='${{ secrets.SUPABASE_SERVICE_KEY }}' \
             APP_BASE_URL='${{ secrets.APP_BASE_URL }}' \
             ENVIRONMENT='${{ inputs.environment }}'
-          echo "✅ Railway env vars synced"
+          echo "Railway env vars synced"
 
       # ── Wait for Railway to boot then health check ───────────────────────
       - name: Wait and health check
@@ -84,10 +78,10 @@ jobs:
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_BASE_URL }}/health")
           echo "Health check HTTP $STATUS"
           if [ "$STATUS" != "200" ]; then
-            echo "❌ Health check failed — check Railway logs"
+            echo "Health check failed — check Railway logs"
             exit 1
           fi
-          echo "✅ Service healthy at ${{ secrets.APP_BASE_URL }}"
+          echo "Service healthy at ${{ secrets.APP_BASE_URL }}"
 
       # ── Install Stripe CLI ───────────────────────────────────────────────
       - name: Install Stripe CLI
@@ -104,24 +98,24 @@ jobs:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          WEBHOOK_URL="${APP_BASE_URL}/stripe-webhook"
+          WEBHOOK_URL="${APP_BASE_URL}/payments/webhook/stripe"
           EXISTING=$(stripe webhook_endpoints list \
             --api-key "$STRIPE_SECRET_KEY" \
             --format json 2>/dev/null \
             | jq -r ".data[] | select(.url == \"$WEBHOOK_URL\") | .id" | head -n 1)
 
           if [ -n "$EXISTING" ]; then
-            echo "✅ Webhook already registered: $EXISTING"
+            echo "Webhook already registered: $EXISTING"
           else
             OUTPUT=$(stripe webhook_endpoints create \
               --url "$WEBHOOK_URL" \
-              --enabled-events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted \
+              --enabled-events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,payment_intent.succeeded,payment_intent.payment_failed \
               --api-key "$STRIPE_SECRET_KEY" \
               --format json)
             WEBHOOK_SECRET=$(echo "$OUTPUT" | jq -r '.secret')
-            echo "✅ Webhook registered"
+            echo "Webhook registered"
             echo "STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> $GITHUB_ENV
-            echo "::notice::Copy STRIPE_WEBHOOK_SECRET to your GitHub secrets: $WEBHOOK_SECRET"
+            echo "::notice::Set STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET in GitHub secrets and Railway dashboard"
           fi
 
       # ── Write STRIPE_WEBHOOK_SECRET back to Railway ──────────────────────
@@ -131,14 +125,12 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           railway variables set STRIPE_WEBHOOK_SECRET="${{ env.STRIPE_WEBHOOK_SECRET }}"
-          echo "✅ STRIPE_WEBHOOK_SECRET pushed to Railway"
+          echo "STRIPE_WEBHOOK_SECRET pushed to Railway"
 
       # ── Final status report ──────────────────────────────────────────────
       - name: Done
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo " ✅ GARCAR PAYMENTS AUTOKEY COMPLETE"
-          echo " Service: ${{ secrets.APP_BASE_URL }}"
-          echo " Environment: ${{ inputs.environment }}"
-          echo " Every future push to main auto-deploys"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "GARCAR PAYMENTS AUTOKEY COMPLETE"
+          echo "Service: ${{ secrets.APP_BASE_URL }}"
+          echo "Webhook: ${{ secrets.APP_BASE_URL }}/payments/webhook/stripe"
+          echo "Environment: ${{ inputs.environment }}"
