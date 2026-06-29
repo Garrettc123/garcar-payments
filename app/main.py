@@ -1,6 +1,8 @@
 import os
 import json
+import urllib.request
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import stripe
@@ -94,6 +96,59 @@ def _default_url(path: str) -> str:
     return f"{base_url}{path}"
 
 
+def _append_gc_ledger(event: dict, obj: dict) -> None:
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not supabase_url or not supabase_key:
+        return
+
+    event_type = event.get("type", "unknown")
+    amount_total: Optional[int] = None
+    currency: Optional[str] = None
+    customer_email: Optional[str] = None
+
+    if event_type == "checkout.session.completed":
+        amount_total = obj.get("amount_total")
+        currency = obj.get("currency")
+        customer_email = (obj.get("customer_details") or {}).get("email") or obj.get("customer_email")
+    elif event_type in ("invoice.paid", "invoice.payment_succeeded"):
+        amount_total = obj.get("amount_paid") or obj.get("amount_total")
+        currency = obj.get("currency")
+        customer_email = obj.get("customer_email")
+    elif event_type == "payment_intent.succeeded":
+        amount_total = obj.get("amount")
+        currency = obj.get("currency")
+        customer_email = obj.get("receipt_email")
+
+    row = {
+        "trace_id": event.get("id", "unknown"),
+        "stage": "stripe_event",
+        "stripe_event_id": event.get("id"),
+        "amount_total": amount_total,
+        "currency": currency,
+        "customer_email": customer_email,
+        "outcomes": {"event_type": event_type, "livemode": event.get("livemode", False)},
+        "all_ok": True,
+    }
+
+    try:
+        data = json.dumps(row).encode("utf-8")
+        req = urllib.request.Request(
+            f"{supabase_url.rstrip('/')}/rest/v1/gc_ledger",
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Prefer": "return=minimal",
+            },
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
 @app.get("/health")
 def health():
     return {
@@ -105,7 +160,6 @@ def health():
 
 @app.get("/pricing")
 def pricing():
-    # Does not expose Stripe price IDs publicly.
     return {"plans": _configured_offers()}
 
 
@@ -115,7 +169,6 @@ async def create_checkout_session(
     plan: Optional[str] = Query(default=None),
     email: Optional[str] = Query(default=None),
 ):
-    # Backward compatible: accepts either JSON body or legacy query params.
     body: dict[str, Any] = {}
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -194,7 +247,60 @@ async def stripe_webhook(request: Request):
     finally:
         db.close()
 
+    _append_gc_ledger(event, obj)
+
     return {"received": True, "event_type": event.get("type")}
+
+
+@app.get("/mrr")
+def mrr():
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+
+    if not supabase_url or not supabase_key:
+        fallback = float(os.getenv("CURRENT_MRR", "0"))
+        return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "env_fallback"}
+
+    try:
+        req = urllib.request.Request(
+            f"{supabase_url.rstrip('/')}/rest/v1/gc_ledger?all_ok=eq.true&select=amount_total,currency,customer_email,created_at",
+            method="GET",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            rows = json.loads(resp.read())
+    except Exception:
+        fallback = float(os.getenv("CURRENT_MRR", "0"))
+        return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "fallback_on_error"}
+
+    now = datetime.now(timezone.utc)
+    mrr_cents = 0
+    lifetime_cents = 0
+    active_emails: set[str] = set()
+
+    for row in rows:
+        amount = row.get("amount_total") or 0
+        if (row.get("currency") or "usd").lower() != "usd":
+            continue
+        lifetime_cents += amount
+        try:
+            dt = datetime.fromisoformat((row.get("created_at") or "").replace("Z", "+00:00"))
+            if dt.year == now.year and dt.month == now.month:
+                mrr_cents += amount
+                if row.get("customer_email"):
+                    active_emails.add(row["customer_email"])
+        except Exception:
+            pass
+
+    return {
+        "mrr_usd": round(mrr_cents / 100, 2),
+        "active_subscriptions": len(active_emails),
+        "lifetime_revenue_usd": round(lifetime_cents / 100, 2),
+        "source": "gc_ledger",
+    }
 
 
 @app.get("/success")

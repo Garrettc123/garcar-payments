@@ -10,8 +10,19 @@ jobs:
       - name: Create Stripe webhook endpoint
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          WEBHOOK_URL="https://garcar-payments.vercel.app/payments/webhook/stripe"
+          if [ -z "$STRIPE_SECRET_KEY" ]; then
+            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping"
+            exit 0
+          fi
+
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping"
+            exit 0
+          fi
+
+          WEBHOOK_URL="${APP_BASE_URL}/stripe-webhook"
           echo "Registering: $WEBHOOK_URL"
 
           RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
@@ -37,7 +48,7 @@ if 'secret' in data:
     print('Signing Secret:', data['secret'])
     print()
     print('=== ACTION REQUIRED ===')
-    print('Set this in Vercel environment variables for garcar-payments:')
+    print('Set this in Railway and GitHub secrets:')
     print('  STRIPE_WEBHOOK_SECRET=' + data['secret'])
 elif 'error' in data:
     print('ERROR:', data['error']['message'])
