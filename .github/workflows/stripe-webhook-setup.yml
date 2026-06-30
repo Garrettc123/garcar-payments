@@ -10,8 +10,19 @@ jobs:
       - name: Create Stripe webhook endpoint
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          WEBHOOK_URL="https://garcar-payments.vercel.app/payments/webhook/stripe"
+          if [ -z "$STRIPE_SECRET_KEY" ]; then
+            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping"
+            exit 0
+          fi
+
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping"
+            exit 0
+          fi
+
+          WEBHOOK_URL="${APP_BASE_URL}/stripe-webhook"
           echo "Registering: $WEBHOOK_URL"
 
           RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
@@ -28,21 +39,22 @@ jobs:
 
           echo "Response: $RESPONSE"
 
-          echo "$RESPONSE" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-if 'secret' in data:
-    print('SUCCESS')
-    print('Webhook ID:', data['id'])
-    print('Signing Secret:', data['secret'])
-    print()
-    print('=== ACTION REQUIRED ===')
-    print('Set this in Vercel environment variables for garcar-payments:')
-    print('  STRIPE_WEBHOOK_SECRET=' + data['secret'])
-elif 'error' in data:
-    print('ERROR:', data['error']['message'])
-    sys.exit(1)
-else:
-    print('Unexpected response:', data)
-    sys.exit(1)
-"
+          SECRET=$(echo "$RESPONSE" | jq -r '.secret // empty')
+          ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
+
+          if [ -n "$SECRET" ]; then
+            WID=$(echo "$RESPONSE" | jq -r '.id')
+            echo "SUCCESS"
+            echo "Webhook ID: $WID"
+            echo "Signing Secret: $SECRET"
+            echo ""
+            echo "=== ACTION REQUIRED ==="
+            echo "Set this in Railway and GitHub secrets:"
+            echo "  STRIPE_WEBHOOK_SECRET=$SECRET"
+          elif [ -n "$ERROR" ]; then
+            echo "ERROR: $ERROR"
+            exit 1
+          else
+            echo "Unexpected response: $RESPONSE"
+            exit 1
+          fi

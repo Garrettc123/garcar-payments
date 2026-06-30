@@ -30,6 +30,10 @@ jobs:
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
         run: |
+          if [ -z "$STRIPE_SECRET_KEY" ]; then
+            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping smoke test"
+            exit 0
+          fi
           stripe trigger ${{ github.event.inputs.event || 'payment_intent.succeeded' }} \
             --api-key "$STRIPE_SECRET_KEY"
 
@@ -37,6 +41,10 @@ jobs:
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping health check"
+            exit 0
+          fi
           echo "Checking $APP_BASE_URL/health ..."
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_BASE_URL/health")
           echo "Status: $STATUS"

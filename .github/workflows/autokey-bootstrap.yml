@@ -98,7 +98,7 @@ jobs:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          WEBHOOK_URL="${APP_BASE_URL}/payments/webhook/stripe"
+          WEBHOOK_URL="${APP_BASE_URL}/stripe-webhook"
           EXISTING=$(stripe webhook_endpoints list \
             --api-key "$STRIPE_SECRET_KEY" \
             --format json 2>/dev/null \
@@ -132,5 +132,5 @@ jobs:
         run: |
           echo "GARCAR PAYMENTS AUTOKEY COMPLETE"
           echo "Service: ${{ secrets.APP_BASE_URL }}"
-          echo "Webhook: ${{ secrets.APP_BASE_URL }}/payments/webhook/stripe"
+          echo "Webhook: ${{ secrets.APP_BASE_URL }}/stripe-webhook"
           echo "Environment: ${{ inputs.environment }}"
