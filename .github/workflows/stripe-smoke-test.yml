@@ -53,3 +53,30 @@ jobs:
             exit 1
           fi
           echo "Health check PASSED"
+
+      - name: Pricing endpoint check
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping pricing check"
+            exit 0
+          fi
+          BODY=$(curl -fsS "$APP_BASE_URL/pricing")
+          echo "$BODY" | jq -e '.plans | map(.key) | index("audit") != null' >/dev/null
+          echo "$BODY" | jq -e '.plans | map(.key) | index("dealdesk") != null' >/dev/null
+          echo "Pricing check PASSED (audit + dealdesk present)"
+
+      - name: Checkout session check
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping checkout check"
+            exit 0
+          fi
+          BODY=$(curl -fsS -X POST "$APP_BASE_URL/create-checkout-session" \
+            -H 'Content-Type: application/json' \
+            -d '{"plan":"audit","email":"test@example.com","source":"production-smoke-test"}')
+          echo "$BODY" | jq -e '.checkout_url and (.checkout_url | type == "string") and (.checkout_url | startswith("https://"))' >/dev/null
+          echo "Checkout check PASSED (checkout_url returned)"

@@ -1,67 +1,73 @@
-# GAR-496 — Railway Deployment Steps
-## garcar-payments — Stripe Payment Gateway
-
----
+# Production Launch — Railway Deployment Steps
+## garcar-payments Stripe Checkout API
 
 ## 5-Minute Deploy
 
 ### Step 1 — Create Railway service
 1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
 2. Select `Garrettc123/garcar-payments`
-3. Railway auto-detects the `Dockerfile` → confirm builder = Dockerfile
-4. Service name: `garcar-payments`
-5. Click **Deploy**
+3. Confirm Railway uses the repo `Dockerfile`
+4. Deploy service
 
-### Step 2 — Set these 5 env vars in Railway → Variables
+### Step 2 — Set required Railway Variables
 
-```
-STRIPE_SECRET_KEY        sk_live_...          (Stripe Dashboard → Developers → API keys)
-STRIPE_WEBHOOK_SECRET    whsec_...            (fill in Step 4 below)
-LINEAR_API_KEY           lin_api_...          (Linear → Settings → API)
-SLACK_WEBHOOK_URL        https://hooks.slack.com/services/...
-NOTION_TOKEN             secret_...           (Notion integration token)
-```
-
-### Step 3 — Verify health
 ```bash
-curl https://<your-railway-url>.railway.app/health
-# Expected: {"status": "running", "service": "garcar-payments"}
+STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET
+STRIPE_PRICE_AUDIT
+STRIPE_PRICE_DEALDESK
+STRIPE_PRICE_STARTER
+STRIPE_PRICE_PRO
+STRIPE_PRICE_AGENCY
+APP_BASE_URL
+DATABASE_URL
+CORS_ALLOW_ORIGINS
 ```
 
-### Step 4 — Register Stripe webhook
-1. [Stripe → Developers → Webhooks](https://dashboard.stripe.com/webhooks) → **Add endpoint**
-2. URL: `https://<your-railway-url>.railway.app/payments/webhook/stripe`
-3. Select events:
+### Step 3 — Mirror required GitHub Actions secrets
+In `garcar-payments` repo → Settings → Secrets and variables → Actions, set:
+
+```bash
+RAILWAY_TOKEN
+STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET
+STRIPE_PRICE_AUDIT
+STRIPE_PRICE_DEALDESK
+STRIPE_PRICE_STARTER
+STRIPE_PRICE_PRO
+STRIPE_PRICE_AGENCY
+APP_BASE_URL
+DATABASE_URL
+CORS_ALLOW_ORIGINS
+```
+
+### Step 4 — Register Stripe webhook endpoint
+1. Stripe Dashboard → Developers → Webhooks → **Add endpoint**
+2. Endpoint URL: `https://<your-railway-url>.up.railway.app/stripe-webhook`
+3. Enable at least:
    - `checkout.session.completed`
-   - `customer.subscription.created`
-   - `customer.subscription.deleted`
    - `invoice.paid`
-   - `invoice.payment_failed`
-4. Copy **Signing secret** (`whsec_...`)
-5. Add to Railway Variables: `STRIPE_WEBHOOK_SECRET = whsec_...`
-6. Railway auto-redeploys
+4. Copy signing secret (`whsec_...`) and set `STRIPE_WEBHOOK_SECRET` in Railway and GitHub Actions secrets
 
-### Step 5 — Set GitHub Secrets (enables CI/CD)
-In `garcar-payments` repo → Settings → Secrets → Actions:
+### Step 5 — Run launch acceptance checks
+```bash
+curl https://garcar-payments.up.railway.app/health
+curl https://garcar-payments.up.railway.app/pricing
+curl -X POST https://garcar-payments.up.railway.app/create-checkout-session \
+  -H 'Content-Type: application/json' \
+  -d '{"plan":"audit","email":"test@example.com","source":"production-smoke-test"}'
 ```
-RAILWAY_TOKEN         (Railway → Account Settings → Tokens)
-RAILWAY_DEPLOY_URL    https://<your-railway-url>.railway.app
-```
 
-### Step 6 — Run smoke test
-Actions tab → **Stripe Webhook Smoke Test** → **Run workflow**
-
-All 5 checks must pass. GAR-496 = Done.
-
----
+Expected:
+- `/health` returns `status: ok`
+- `/pricing` includes `audit` and `dealdesk`
+- `/create-checkout-session` returns a `checkout_url`
 
 ## Route Reference
 
 | Route | Purpose |
 |---|---|
 | `GET /health` | Railway healthcheck |
-| `POST /payments/webhook/stripe` | Stripe webhook (HMAC-verified) |
-| `GET /payments/mrr` | Current MRR from ledger |
-| `POST /payments/payment/create-link` | Dynamic payment link |
-| `GET /mars/` | MARS API landing |
-| `GET /mars/api/tiers` | Pricing tiers |
+| `GET /pricing` | Public plan catalog |
+| `POST /create-checkout-session` | Start Stripe Checkout |
+| `POST /stripe-webhook` | Stripe webhook receiver |

@@ -26,12 +26,28 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_PRICE_AUDIT: ${{ secrets.STRIPE_PRICE_AUDIT }}
+          STRIPE_PRICE_DEALDESK: ${{ secrets.STRIPE_PRICE_DEALDESK }}
+          STRIPE_PRICE_STARTER: ${{ secrets.STRIPE_PRICE_STARTER }}
+          STRIPE_PRICE_PRO: ${{ secrets.STRIPE_PRICE_PRO }}
+          STRIPE_PRICE_AGENCY: ${{ secrets.STRIPE_PRICE_AGENCY }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ secrets.CORS_ALLOW_ORIGINS }}
         run: |
           MISSING=""
           [ -z "$RAILWAY_TOKEN" ]     && MISSING="$MISSING RAILWAY_TOKEN"
           [ -z "$STRIPE_SECRET_KEY" ] && MISSING="$MISSING STRIPE_SECRET_KEY"
+          [ -z "$STRIPE_WEBHOOK_SECRET" ] && MISSING="$MISSING STRIPE_WEBHOOK_SECRET"
+          [ -z "$STRIPE_PRICE_AUDIT" ] && MISSING="$MISSING STRIPE_PRICE_AUDIT"
+          [ -z "$STRIPE_PRICE_DEALDESK" ] && MISSING="$MISSING STRIPE_PRICE_DEALDESK"
+          [ -z "$STRIPE_PRICE_STARTER" ] && MISSING="$MISSING STRIPE_PRICE_STARTER"
+          [ -z "$STRIPE_PRICE_PRO" ] && MISSING="$MISSING STRIPE_PRICE_PRO"
+          [ -z "$STRIPE_PRICE_AGENCY" ] && MISSING="$MISSING STRIPE_PRICE_AGENCY"
           [ -z "$APP_BASE_URL" ]      && MISSING="$MISSING APP_BASE_URL"
+          [ -z "$DATABASE_URL" ]      && MISSING="$MISSING DATABASE_URL"
+          [ -z "$CORS_ALLOW_ORIGINS" ] && MISSING="$MISSING CORS_ALLOW_ORIGINS"
           if [ -n "$MISSING" ]; then
             echo "Missing secrets:$MISSING"
             echo "Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions"
@@ -62,11 +78,14 @@ jobs:
           railway variables set \
             STRIPE_SECRET_KEY='${{ secrets.STRIPE_SECRET_KEY }}' \
             STRIPE_WEBHOOK_SECRET='${{ secrets.STRIPE_WEBHOOK_SECRET }}' \
-            LINEAR_API_KEY='${{ secrets.LINEAR_API_KEY }}' \
-            NOTION_TOKEN='${{ secrets.NOTION_TOKEN }}' \
-            SUPABASE_URL='${{ secrets.SUPABASE_URL }}' \
-            SUPABASE_SERVICE_KEY='${{ secrets.SUPABASE_SERVICE_KEY }}' \
+            STRIPE_PRICE_AUDIT='${{ secrets.STRIPE_PRICE_AUDIT }}' \
+            STRIPE_PRICE_DEALDESK='${{ secrets.STRIPE_PRICE_DEALDESK }}' \
+            STRIPE_PRICE_STARTER='${{ secrets.STRIPE_PRICE_STARTER }}' \
+            STRIPE_PRICE_PRO='${{ secrets.STRIPE_PRICE_PRO }}' \
+            STRIPE_PRICE_AGENCY='${{ secrets.STRIPE_PRICE_AGENCY }}' \
             APP_BASE_URL='${{ secrets.APP_BASE_URL }}' \
+            DATABASE_URL='${{ secrets.DATABASE_URL }}' \
+            CORS_ALLOW_ORIGINS='${{ secrets.CORS_ALLOW_ORIGINS }}' \
             ENVIRONMENT='${{ inputs.environment }}'
           echo "Railway env vars synced"
 
