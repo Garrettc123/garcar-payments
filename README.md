@@ -23,6 +23,7 @@ This service is the revenue spine for the public Garcar landing page and the rec
 | POST | `/create-checkout-session` | Start Stripe checkout for one-time or subscription offers |
 | POST | `/stripe-webhook` | Receive Stripe events and persist billing event records |
 | GET | `/success` | Post-payment success response |
+| GET | `/mrr` | Live MRR dashboard |
 
 ## Checkout Request
 
@@ -44,13 +45,21 @@ Backward-compatible query params still work:
 curl -X POST "https://garcar-payments.up.railway.app/create-checkout-session?plan=audit&email=buyer@example.com"
 ```
 
-## Required Secrets / Variables
+## Secrets — Single Source of Truth
+
+**All secrets live in one place:**
+
+https://github.com/Garrettc123/garcar-payments/settings/secrets/actions
+
+Full canonical list, activation sequence, and naming rules: **[SECRETS.md](./SECRETS.md)**  
+Zero copy-paste bootstrap: **[AUTOKEY.md](./AUTOKEY.md)**  
+Step-by-step go-live: **[ACTIVATION.md](./ACTIVATION.md)**
 
 | Variable | Source |
 |----------|--------|
 | `RAILWAY_TOKEN` | railway.app → Account → Tokens |
 | `STRIPE_SECRET_KEY` | Stripe Dashboard → Developers → API Keys |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook endpoint secret |
+| `STRIPE_WEBHOOK_SECRET` | Auto-written by autokey-bootstrap |
 | `STRIPE_PRICE_AUDIT` | Stripe Product/Price for one-time audit |
 | `STRIPE_PRICE_DEALDESK` | Stripe Product/Price for one-time setup |
 | `STRIPE_PRICE_STARTER` | Stripe recurring price |
@@ -62,7 +71,9 @@ curl -X POST "https://garcar-payments.up.railway.app/create-checkout-session?pla
 
 ## Deploy
 
-Every push to `main` deploys automatically via GitHub Actions if Railway secrets are configured.
+1. Set secrets once (link above).
+2. Run Autokey Bootstrap once.
+3. Every push to `main` deploys automatically.
 
 ```bash
 git push origin main
@@ -71,7 +82,7 @@ git push origin main
 ## Local dev
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # or .env.template
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
