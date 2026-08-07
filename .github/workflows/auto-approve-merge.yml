@@ -17,10 +17,15 @@ jobs:
     if: github.event.pull_request || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Approve PR
+        id: approve_pr
         uses: hmarr/auto-approve-action@v3
         continue-on-error: true
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report approval failure
+        if: steps.approve_pr.outcome == 'failure'
+        run: echo "::warning::Auto-approve failed (often due to token approval restrictions); continuing to auto-merge attempt."
 
       - name: Auto Merge PR
         uses: pascalgn/automerge-action@v0.15.6
