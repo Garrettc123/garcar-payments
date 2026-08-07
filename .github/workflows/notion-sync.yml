@@ -78,8 +78,8 @@ jobs:
           r = requests.get(f"{payments_url}/mrr", timeout=15)
           r.raise_for_status()
           data = r.json()
-          mrr            = data["mrr_usd"]
-          total_payments = data["total_payments"]
+          mrr            = data.get("mrr_usd", 0)
+          total_payments = data.get("total_payments") or data.get("active_subscriptions", 0)
           now            = datetime.datetime.utcnow().isoformat()
 
           print(f"MRR: ${mrr} | Payments: {total_payments}")
