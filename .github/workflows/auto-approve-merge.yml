@@ -18,6 +18,7 @@ jobs:
     steps:
       - name: Approve PR
         uses: hmarr/auto-approve-action@v3
+        continue-on-error: true
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
