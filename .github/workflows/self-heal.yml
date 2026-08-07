@@ -21,14 +21,27 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Redeploy service
+      - name: Validate Railway authentication
+        id: railway-auth
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "⚠️ RAILWAY_TOKEN not configured — skipping"
-            exit 0
+            echo "authenticated=false" >> $GITHUB_OUTPUT
+            echo "::warning::RAILWAY_TOKEN is missing — skipping redeploy"
+          elif railway whoami >/dev/null 2>&1; then
+            echo "authenticated=true" >> $GITHUB_OUTPUT
+            echo "Railway authentication OK"
+          else
+            echo "authenticated=false" >> $GITHUB_OUTPUT
+            echo "::warning::RAILWAY_TOKEN is present but Railway CLI authentication failed — skipping redeploy"
           fi
+
+      - name: Redeploy service
+        if: steps.railway-auth.outputs.authenticated == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
           echo "Self-healing: redeploying garcar-payments"
           railway up --service garcar-payments
 
