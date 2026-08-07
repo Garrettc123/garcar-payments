@@ -61,14 +61,29 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Validate Railway authentication
+        id: railway-auth
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if railway whoami >/dev/null 2>&1; then
+            echo "authenticated=true" >> $GITHUB_OUTPUT
+            echo "Railway authentication OK"
+          else
+            echo "authenticated=false" >> $GITHUB_OUTPUT
+            echo "::warning::RAILWAY_TOKEN is present but Railway CLI authentication failed — skipping Railway deploy and sync steps"
+          fi
+
       # ── Push code to Railway ─────────────────────────────────────────────
       - name: Deploy to Railway
+        if: steps.railway-auth.outputs.authenticated == 'true'
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: railway up --detach
 
       # ── Sync all env vars to Railway from GitHub secrets ─────────────────
       - name: Sync env vars to Railway
+        if: steps.railway-auth.outputs.authenticated == 'true'
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
@@ -142,7 +157,7 @@ jobs:
 
       # ── Write STRIPE_WEBHOOK_SECRET back to Railway ──────────────────────
       - name: Write webhook secret to Railway
-        if: env.STRIPE_WEBHOOK_SECRET != ''
+        if: env.STRIPE_WEBHOOK_SECRET != '' && steps.railway-auth.outputs.authenticated == 'true'
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
