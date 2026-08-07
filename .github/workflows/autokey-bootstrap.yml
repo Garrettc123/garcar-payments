@@ -2,6 +2,8 @@ name: Autokey Bootstrap
 # Run this ONCE manually from GitHub Actions UI.
 # It reads secrets and deploys to Railway, syncs env vars,
 # then registers the Stripe webhook automatically.
+#
+# Single source of truth for secret names: SECRETS.md
 
 on:
   workflow_dispatch:
@@ -26,10 +28,14 @@ jobs:
         id: resolve
         env:
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
         run: |
           if [ -n "$APP_BASE_URL_SECRET" ]; then
             echo "url=$APP_BASE_URL_SECRET" >> $GITHUB_OUTPUT
             echo "Using APP_BASE_URL from secret"
+          elif [ -n "$GARCAR_PAYMENTS_URL" ]; then
+            echo "url=$GARCAR_PAYMENTS_URL" >> $GITHUB_OUTPUT
+            echo "Using GARCAR_PAYMENTS_URL alias"
           else
             echo "url=https://garcar-payments.up.railway.app" >> $GITHUB_OUTPUT
             echo "Using hardcoded APP_BASE_URL fallback (garcar-payments.up.railway.app)"
@@ -47,6 +53,7 @@ jobs:
           if [ -n "$MISSING" ]; then
             echo "Missing secrets:$MISSING"
             echo "Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "Full list: see SECRETS.md in this repository"
             exit 1
           fi
           echo "All required secrets present"
@@ -81,14 +88,17 @@ jobs:
             STRIPE_PRICE_PRO='${{ secrets.STRIPE_PRICE_PRO }}' \
             STRIPE_PRICE_AGENCY='${{ secrets.STRIPE_PRICE_AGENCY }}' \
             LINEAR_API_KEY='${{ secrets.LINEAR_API_KEY }}' \
+            LINEAR_TEAM_ID='${{ secrets.LINEAR_TEAM_ID }}' \
             NOTION_TOKEN='${{ secrets.NOTION_TOKEN }}' \
+            NOTION_REVENUE_DB_ID='${{ secrets.NOTION_REVENUE_DB_ID }}' \
             SUPABASE_URL='${{ secrets.SUPABASE_URL }}' \
             SUPABASE_SERVICE_KEY='${{ secrets.SUPABASE_SERVICE_KEY }}' \
             DATABASE_URL='${{ secrets.DATABASE_URL }}' \
             CORS_ALLOW_ORIGINS='${{ secrets.CORS_ALLOW_ORIGINS }}' \
             APP_BASE_URL='${{ steps.resolve.outputs.url }}' \
+            GARCAR_PAYMENTS_URL='${{ steps.resolve.outputs.url }}' \
             ENVIRONMENT='${{ inputs.environment }}'
-          echo "Railway env vars synced"
+          echo "Railway env vars synced from GitHub secrets"
 
       # ── Wait for Railway to boot then health check ───────────────────────
       - name: Wait and health check
@@ -156,3 +166,4 @@ jobs:
           echo "Service: ${{ steps.resolve.outputs.url }}"
           echo "Webhook: ${{ steps.resolve.outputs.url }}/stripe-webhook"
           echo "Environment: ${{ inputs.environment }}"
+          echo "All secrets pulled from GitHub Actions → Railway"
