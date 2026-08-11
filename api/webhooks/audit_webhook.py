@@ -14,7 +14,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 AUDIT_PRODUCT_ID = "prod_V3OplsZcTcvRg9"
-AUDIT_PRICE_ID = "price_1U3I2kFKGbk21LK5CQ4nXqcx"
+RETAINER_PRODUCT_ID = "prod_V3R8CoOuRdsHTP"
 
 @router.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
@@ -28,21 +28,16 @@ async def stripe_webhook(request: Request):
     except stripe.error.SignatureVerificationError as e:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Handle Checkout Sessions
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         
-        # Check if this is the Automation Audit product
-        # In a real scenario, you might expand line_items or check metadata
-        if session.get("metadata", {}).get("source") == "Garcar Unified Command Center":
-            # 1. Insert into Supabase
-            data, count = supabase.table("audit_orders").insert({
-                "checkout_session_id": session["id"],
-                "customer_email": session.get("customer_details", {}).get("email"),
-                "status": "paid",
-                "stripe_product_id": AUDIT_PRODUCT_ID
-            }).execute()
-
-            # 2. Linear issue creation logic would go here
-            # (Note: Linear workspace hit free limit, manual tracking recommended for now)
+        # 1. Insert into Supabase
+        data, count = supabase.table("audit_orders").insert({
+            "checkout_session_id": session["id"],
+            "customer_email": session.get("customer_details", {}).get("email"),
+            "status": "paid",
+            "stripe_product_id": session.get("metadata", {}).get("product_id", "unknown")
+        }).execute()
 
     return {"status": "success"}
