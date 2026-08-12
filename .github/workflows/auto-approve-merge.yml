@@ -1,30 +1,14 @@
-name: Auto Approve & Merge
+# DISABLED: Automatic PR approval and merge removed for security.
+# All merges to main require human review via branch protection rules.
+# Production deployments are gated by the "production" GitHub Environment.
+name: Auto Approve & Merge (DISABLED)
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-
-permissions:
-  contents: write
-  pull-requests: write
+  workflow_dispatch:  # Only runnable manually — never fires automatically
 
 jobs:
-  auto-approve-merge:
+  notice:
     runs-on: ubuntu-latest
-    if: github.event.pull_request
     steps:
-      - name: Approve PR
-        uses: hmarr/auto-approve-action@v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto Merge PR
-        uses: pascalgn/automerge-action@v0.15.6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MERGE_LABELS: ""
-          MERGE_METHOD: squash
-          MERGE_DELETE_BRANCH: true
-          UPDATE_METHOD: rebase
-          MERGE_COMMIT_MESSAGE: "auto"
-          MERGE_RETRY_SLEEP: 5000
+      - name: Notice
+        run: echo "Automatic PR approval and merge has been disabled. Merges require human review."
