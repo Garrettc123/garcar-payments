@@ -1,0 +1,35 @@
+name: AutoKey Bootstrap to Railway
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_base_url:
+        description: 'The public URL of your deployed Railway app (e.g. https://garcar-payments.up.railway.app)'
+        required: true
+
+jobs:
+  bootstrap:
+    name: Generate & Push Secrets
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Railway CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install -g @railway/cli
+
+      - name: Run AutoKey Sync
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          APP_BASE_URL: ${{ inputs.app_base_url }}
+        run: python scripts/autokey_bootstrap.py
