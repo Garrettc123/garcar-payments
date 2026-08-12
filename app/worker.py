@@ -146,10 +146,12 @@ def run_pending(max_jobs: int = 50) -> int:
         for job in jobs:
             if job.attempts > 0:
                 delay = _backoff_seconds(job.attempts - 1)
-                elapsed = (
-                    datetime.now(timezone.utc)
-                    - (job.updated_at or job.created_at).replace(tzinfo=timezone.utc)
-                ).total_seconds()
+                # Use utcnow() for both sides to ensure naive datetime comparison
+                updated = job.updated_at or job.created_at
+                if updated is not None:
+                    elapsed = (datetime.utcnow() - updated).total_seconds()
+                else:
+                    elapsed = delay + 1  # treat missing timestamp as ready
                 if elapsed < delay:
                     logger.debug(
                         "Job %s back-off: waiting %.0fs (elapsed %.0fs)",

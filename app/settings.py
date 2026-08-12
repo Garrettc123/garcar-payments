@@ -89,12 +89,14 @@ class Settings(BaseSettings):
         required = [
             ("STRIPE_SECRET_KEY", self.stripe_secret_key),
             ("STRIPE_WEBHOOK_SECRET", self.stripe_webhook_secret),
-            ("APP_BASE_URL", self.app_base_url),
             ("DOWNLOAD_SIGNING_SECRET", self.download_signing_secret),
         ]
         for name, value in required:
-            if not value or value in ("http://localhost:8000", ""):
+            if not value:
                 missing.append(name)
+        # APP_BASE_URL must be a real HTTPS URL in production (not localhost)
+        if not self.app_base_url or not self.app_base_url.startswith("https://"):
+            missing.append("APP_BASE_URL")
         # Price IDs must all be configured in production
         price_ids = {
             "STRIPE_PRICE_AUDIT": self.stripe_price_audit,
