@@ -6,20 +6,46 @@ on:
   pull_request:
     branches: ["**"]
 
+# Cancel in-flight runs for the same ref
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Run tests
+    name: Lint, SAST & Tests
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
         with:
           python-version: "3.11"
 
+      - name: Cache pip
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a  # v4.1.2
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install pydantic-settings resend itsdangerous bandit
+
+      - name: SAST — bandit
+        run: bandit -r app/ -ll --exit-zero
 
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Build Docker image (smoke test)
+        run: docker build -t garcar-payments:ci .

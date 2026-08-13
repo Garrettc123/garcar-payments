@@ -1,5 +1,21 @@
-import os
+"""
+garcar-payments FastAPI application.
+
+Production hardening:
+- All secrets loaded via app.settings (pydantic-settings, fail-closed)
+- Stripe webhook verifies raw-body HMAC signature (fail-closed when secret set)
+- Webhook events recorded idempotently; fulfillment enqueued per-event
+- Product allow-list gate on every checkout and fulfillment path
+- Signed download endpoint with expiry + entitlement verification
+- /livez and /readyz health endpoints
+- Structured JSON logging (no secrets in log output)
+"""
+from __future__ import annotations
+
 import json
+import logging
+import logging.config
+import time
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -11,47 +27,59 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.db import SessionLocal, BillingEvent, init_db
+from app.db import SessionLocal, BillingEvent, FulfillmentJob, DownloadEntitlement, init_db
+from app.settings import get_settings, assert_production_ready
+from app.download import verify_download_token
 
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+# ── Structured logging ───────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
+)
+logger = logging.getLogger("garcar.payments")
 
-# Canonical sellable Garcar Enterprise offers.
-# One-time offers power the public roofing/home-services landing page.
-# Subscription offers support the recurring SaaS / managed-automation ladder.
-# Each price_id defaults to the matching live price already present in the
-# Garcar Stripe account; set STRIPE_PRICE_* env vars to override.
-OFFER_CATALOG: dict[str, dict[str, Optional[str]]] = {
-    "audit": {
-        "name": "Operational Audit",
-        "price_id": os.getenv("STRIPE_PRICE_AUDIT", "price_1TGmo7FKGbk21LK5szrPJkRl"),
-        "mode": "payment",
-        "description": "$197 lead-leak / missed-call operational audit",
-    },
-    "dealdesk": {
-        "name": "AI Deal Desk Setup",
-        "price_id": os.getenv("STRIPE_PRICE_DEALDESK", "price_1T6lv3FKGbk21LK5J6HCIw2E"),
-        "mode": "payment",
-        "description": "$497 AI call-handling + CRM setup package",
-    },
-    "starter": {
-        "name": "Starter Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_STARTER", "price_1TlkwBFKGbk21LK5ZrbIlV6t"),
-        "mode": "subscription",
-        "description": "Starter recurring automation plan",
-    },
-    "pro": {
-        "name": "Pro Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_PRO", "price_1TlkwBFKGbk21LK5egwCuCru"),
-        "mode": "subscription",
-        "description": "Professional recurring automation plan",
-    },
-    "agency": {
-        "name": "Agency Automation Subscription",
-        "price_id": os.getenv("STRIPE_PRICE_AGENCY", "price_1TIeAJFKGbk21LK5emYRdFRm"),
-        "mode": "subscription",
-        "description": "Agency / managed automation recurring plan",
-    },
-}
+
+# ── Product allow-list ────────────────────────────────────────────────────────
+# Only these keys can be sold.  Price IDs are resolved from settings so they
+# can be overridden per-environment without editing code.
+def _build_offer_catalog() -> dict[str, dict[str, Optional[str]]]:
+    s = get_settings()
+    return {
+        "audit": {
+            "name": "Operational Audit",
+            "price_id": s.stripe_price_audit or "price_1TGmo7FKGbk21LK5szrPJkRl",
+            "mode": "payment",
+            "description": "$197 lead-leak / missed-call operational audit",
+        },
+        "dealdesk": {
+            "name": "AI Deal Desk Setup",
+            "price_id": s.stripe_price_dealdesk or "price_1T6lv3FKGbk21LK5J6HCIw2E",
+            "mode": "payment",
+            "description": "$497 AI call-handling + CRM setup package",
+        },
+        "starter": {
+            "name": "Starter Automation Subscription",
+            "price_id": s.stripe_price_starter or "price_1TlkwBFKGbk21LK5ZrbIlV6t",
+            "mode": "subscription",
+            "description": "Starter recurring automation plan",
+        },
+        "pro": {
+            "name": "Pro Automation Subscription",
+            "price_id": s.stripe_price_pro or "price_1TlkwBFKGbk21LK5egwCuCru",
+            "mode": "subscription",
+            "description": "Professional recurring automation plan",
+        },
+        "agency": {
+            "name": "Agency Automation Subscription",
+            "price_id": s.stripe_price_agency or "price_1TIeAJFKGbk21LK5emYRdFRm",
+            "mode": "subscription",
+            "description": "Agency / managed automation recurring plan",
+        },
+    }
+
+
+# Populated at startup
+OFFER_CATALOG: dict[str, dict[str, Optional[str]]] = {}
 
 
 class CheckoutRequest(BaseModel):
@@ -64,19 +92,38 @@ class CheckoutRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail-closed startup validation
+    assert_production_ready()
+
+    s = get_settings()
+    stripe.api_key = s.stripe_secret_key
+
+    # Populate offer catalog from settings
+    OFFER_CATALOG.update(_build_offer_catalog())
+
     init_db()
+    logger.info('"Application started | env=%s"', s.environment)
     yield
+    logger.info('"Application shutting down"')
 
 
 app = FastAPI(title="garcar-payments", lifespan=lifespan)
+
+
+def _get_cors_origins() -> list[str]:
+    return get_settings().cors_allow_origins.split(",")
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
+    allow_origins=_get_cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _configured_offers() -> list[dict[str, Any]]:
     return [
@@ -92,14 +139,13 @@ def _configured_offers() -> list[dict[str, Any]]:
 
 
 def _default_url(path: str) -> str:
-    base_url = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+    base_url = get_settings().app_base_url.rstrip("/")
     return f"{base_url}{path}"
 
 
 def _append_gc_ledger(event: dict, obj: dict) -> None:
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not supabase_url or not supabase_key:
+    s = get_settings()
+    if not s.supabase_url or not s.supabase_service_key:
         return
 
     event_type = event.get("type", "unknown")
@@ -134,19 +180,55 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
     try:
         data = json.dumps(row).encode("utf-8")
         req = urllib.request.Request(
-            f"{supabase_url.rstrip('/')}/rest/v1/gc_ledger",
+            f"{s.supabase_url.rstrip('/')}/rest/v1/gc_ledger",
             data=data,
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
+                "apikey": s.supabase_service_key,
+                "Authorization": f"******",
                 "Prefer": "return=minimal",
             },
         )
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning('"gc_ledger write failed: %s"', type(exc).__name__)
+
+
+# ── Health endpoints ──────────────────────────────────────────────────────────
+
+_start_time = time.time()
+
+
+@app.get("/livez")
+def livez():
+    """Kubernetes-style liveness probe — returns 200 if the process is alive."""
+    return {"status": "alive", "uptime_s": round(time.time() - _start_time, 1)}
+
+
+@app.get("/readyz")
+def readyz():
+    """
+    Readiness probe — returns 200 only when the app is configured and ready
+    to serve traffic (Stripe key set, DB reachable).
+    """
+    issues: list[str] = []
+    s = get_settings()
+
+    if not s.stripe_secret_key:
+        issues.append("STRIPE_SECRET_KEY not set")
+
+    try:
+        db = SessionLocal()
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        db.close()
+    except Exception as exc:
+        issues.append(f"DB unreachable: {type(exc).__name__}")
+
+    if issues:
+        raise HTTPException(status_code=503, detail={"ready": False, "issues": issues})
+
+    return {"ready": True, "service": "garcar-payments"}
 
 
 @app.get("/health")
@@ -158,10 +240,14 @@ def health():
     }
 
 
+# ── Pricing ───────────────────────────────────────────────────────────────────
+
 @app.get("/pricing")
 def pricing():
     return {"plans": _configured_offers()}
 
+
+# ── Checkout ──────────────────────────────────────────────────────────────────
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(
@@ -188,13 +274,14 @@ async def create_checkout_session(
     if not checkout.email or "@" not in checkout.email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
+    # Product allow-list gate
     offer = OFFER_CATALOG.get(checkout.plan)
     if not offer:
         raise HTTPException(status_code=400, detail="Invalid plan")
 
     price_id = offer.get("price_id")
     if not price_id:
-        raise HTTPException(status_code=503, detail=f"Stripe price is not configured for plan: {checkout.plan}")
+        raise HTTPException(status_code=503, detail=f"Stripe price not configured for plan: {checkout.plan}")
 
     try:
         session = stripe.checkout.Session.create(
@@ -210,31 +297,50 @@ async def create_checkout_session(
                 "source": checkout.source,
             },
         )
+        logger.info('"checkout_session_created | plan=%s | mode=%s"', checkout.plan, offer["mode"])
         return {"checkout_url": session.url, "plan": checkout.plan, "mode": offer["mode"]}
+    except stripe.StripeError as e:
+        logger.error('"stripe_error | type=%s"', type(e).__name__)
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
+        logger.exception('"checkout_unexpected_error"')
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ── Stripe webhook ────────────────────────────────────────────────────────────
 
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
-    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    # Read the webhook secret fresh each call so test env-var overrides work.
+    # The cached settings object is used for all other config.
+    import os as _os
+    secret = _os.getenv("STRIPE_WEBHOOK_SECRET", "") or get_settings().stripe_webhook_secret
 
+    # Fail-closed: when webhook secret is configured, signature must pass.
     try:
         if secret:
             event = stripe.Webhook.construct_event(payload, sig, secret)
         else:
             event = json.loads(payload.decode("utf-8"))
+    except stripe.SignatureVerificationError:
+        logger.warning('"webhook_signature_invalid"')
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid webhook")
+        logger.warning('"webhook_parse_error"')
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
+    event_id = event.get("id", "unknown")
+    event_type = event.get("type", "unknown")
     obj = event.get("data", {}).get("object", {})
+
+    # Idempotent event recording
     db = SessionLocal()
     try:
         record = BillingEvent(
-            event_id=event.get("id", "unknown"),
-            event_type=event.get("type", "unknown"),
+            event_id=event_id,
+            event_type=event_type,
             customer_id=obj.get("customer"),
             subscription_id=obj.get("subscription"),
             invoice_id=obj.get("invoice") or obj.get("id"),
@@ -244,37 +350,130 @@ async def stripe_webhook(request: Request):
         db.commit()
     except IntegrityError:
         db.rollback()
+        logger.info('"webhook_duplicate | event_id=%s"', event_id)
     finally:
         db.close()
 
+    # Enqueue fulfillment job for paid checkout sessions
+    if event_type == "checkout.session.completed":
+        _enqueue_fulfillment(event, obj)
+
     _append_gc_ledger(event, obj)
 
-    return {"received": True, "event_type": event.get("type")}
+    logger.info('"webhook_received | event_type=%s | event_id=%s"', event_type, event_id)
+    return {"received": True, "event_type": event_type}
 
+
+def _enqueue_fulfillment(event: dict, obj: dict) -> None:
+    """Create a FulfillmentJob row, skipping duplicates (idempotent)."""
+    event_id = event.get("id", "unknown")
+    # Server-side plan from Stripe metadata — not from untrusted client input
+    metadata = obj.get("metadata") or {}
+    plan = metadata.get("garcar_plan", "")
+
+    # Product allow-list gate before enqueueing
+    if plan and plan not in OFFER_CATALOG:
+        logger.warning('"fulfillment_unknown_plan | plan=%s | event_id=%s"', plan, event_id)
+        return
+
+    customer_email = (
+        (obj.get("customer_details") or {}).get("email")
+        or obj.get("customer_email")
+        or ""
+    )
+    checkout_session_id = obj.get("id", "")
+
+    db = SessionLocal()
+    try:
+        job = FulfillmentJob(
+            stripe_event_id=event_id,
+            checkout_session_id=checkout_session_id,
+            plan=plan,
+            customer_email=customer_email,
+        )
+        db.add(job)
+        db.commit()
+        logger.info('"fulfillment_job_enqueued | event_id=%s | plan=%s"', event_id, plan)
+    except IntegrityError:
+        db.rollback()
+        logger.info('"fulfillment_job_duplicate | event_id=%s"', event_id)
+    finally:
+        db.close()
+
+
+# ── Signed download endpoint ──────────────────────────────────────────────────
+
+@app.get("/download")
+def download(
+    plan: str = Query(...),
+    email: str = Query(...),
+    event_id: str = Query(...),
+    expires: int = Query(...),
+    sig: str = Query(...),
+    sv: str = Query(default="v1"),
+):
+    """
+    Issues a short-lived asset delivery response.
+
+    Verifies:
+    1. HMAC signature and expiry.
+    2. Plan is in the product allow-list.
+    3. A DownloadEntitlement exists for this email + event_id.
+    """
+    if not verify_download_token(plan, email, event_id, expires, sig, sv):
+        raise HTTPException(status_code=403, detail="Invalid or expired download link")
+
+    # Product allow-list check
+    offer = OFFER_CATALOG.get(plan)
+    if not offer:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Entitlement check
+    db = SessionLocal()
+    try:
+        entitlement = (
+            db.query(DownloadEntitlement)
+            .filter_by(customer_email=email, stripe_event_id=event_id, plan=plan)
+            .first()
+        )
+    finally:
+        db.close()
+
+    if not entitlement:
+        raise HTTPException(status_code=403, detail="No entitlement found for this download")
+
+    logger.info('"download_served | plan=%s | email_hash=%s"', plan, hash(email))
+    # In a real deployment, return a RedirectResponse to a pre-signed S3/R2 URL.
+    return {
+        "ok": True,
+        "plan": plan,
+        "offer": offer["name"],
+        "message": "Entitlement verified. Asset delivery would redirect here in production.",
+    }
+
+
+# ── MRR endpoint ──────────────────────────────────────────────────────────────
 
 @app.get("/mrr")
 def mrr():
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
-
-    if not supabase_url or not supabase_key:
-        fallback = float(os.getenv("CURRENT_MRR", "0"))
+    s = get_settings()
+    if not s.supabase_url or not s.supabase_service_key:
+        fallback = 0.0
         return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "env_fallback"}
 
     try:
         req = urllib.request.Request(
-            f"{supabase_url.rstrip('/')}/rest/v1/gc_ledger?all_ok=eq.true&select=amount_total,currency,customer_email,created_at",
+            f"{s.supabase_url.rstrip('/')}/rest/v1/gc_ledger?all_ok=eq.true&select=amount_total,currency,customer_email,created_at",
             method="GET",
             headers={
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
+                "apikey": s.supabase_service_key,
+                "Authorization": f"******",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             rows = json.loads(resp.read())
     except Exception:
-        fallback = float(os.getenv("CURRENT_MRR", "0"))
-        return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "fallback_on_error"}
+        return {"mrr_usd": 0.0, "active_subscriptions": 0, "source": "fallback_on_error"}
 
     now = datetime.now(timezone.utc)
     mrr_cents = 0

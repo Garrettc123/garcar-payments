@@ -1,96 +1,101 @@
 # garcar-payments
 
-Stripe + FastAPI + Railway payment service for Garcar Enterprise.
+FastAPI service for Garcar Enterprise payments (Stripe Checkout + webhooks,
+fulfillment, signed download links).
 
-This service is the revenue spine for the public Garcar landing page and the recurring SaaS / managed automation product ladder.
+## Setup checklist
 
-## Sellable Offers
+### Required secrets (set in GitHub → Settings → Secrets → Actions)
 
-| Key | Offer | Stripe mode | Purpose |
-|-----|-------|-------------|---------|
-| `audit` | Operational Audit | `payment` | One-time $197 lead-leak / missed-call audit |
-| `dealdesk` | AI Deal Desk Setup | `payment` | One-time $497 setup package |
-| `starter` | Starter Automation Subscription | `subscription` | Entry recurring plan |
-| `pro` | Pro Automation Subscription | `subscription` | Professional recurring plan |
-| `agency` | Agency Automation Subscription | `subscription` | Managed automation / agency plan |
+- [ ] `STRIPE_SECRET_KEY` — Stripe live secret key
+- [ ] `STRIPE_WEBHOOK_SECRET` — From Stripe webhook dashboard
+- [ ] `STRIPE_PRICE_AUDIT` — Stripe Price ID for Operational Audit
+- [ ] `STRIPE_PRICE_DEALDESK` — Stripe Price ID for AI Deal Desk Setup
+- [ ] `STRIPE_PRICE_STARTER` — Stripe Price ID for Starter Subscription
+- [ ] `STRIPE_PRICE_PRO` — Stripe Price ID for Pro Subscription
+- [ ] `STRIPE_PRICE_AGENCY` — Stripe Price ID for Agency Subscription
+- [ ] `APP_BASE_URL` — Public service URL (no trailing slash)
+- [ ] `DATABASE_URL` — PostgreSQL connection string
+- [ ] `DOWNLOAD_SIGNING_SECRET` — Random 32-byte hex; generate with `python -c "import secrets; print(secrets.token_hex(32))"`
+- [ ] `RESEND_API_KEY` — Resend transactional email API key
+- [ ] `EMAIL_FROM` — Sender address (e.g. `noreply@garcar.com`)
+- [ ] `RAILWAY_TOKEN` — Railway service deploy token (not account-wide)
+- [ ] `BACKUP_ENCRYPTION_KEY` — Passphrase for AES backup encryption
 
-## Endpoints
+### Optional secrets
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Service health check + configured offer keys |
-| GET | `/pricing` | Public plan catalog without exposing Stripe price IDs |
-| POST | `/create-checkout-session` | Start Stripe checkout for one-time or subscription offers |
-| POST | `/stripe-webhook` | Receive Stripe events and persist billing event records |
-| GET | `/success` | Post-payment success response |
-| GET | `/mrr` | Live MRR dashboard |
+- [ ] `SUPABASE_URL` — Supabase project URL
+- [ ] `SUPABASE_SERVICE_KEY` — Supabase service role key
+- [ ] `CORS_ALLOW_ORIGINS` — Comma-separated allowed origins (default `*`)
+- [ ] `LINEAR_API_KEY`, `LINEAR_TEAM_ID` — Linear integration
+- [ ] `NOTION_TOKEN`, `NOTION_REVENUE_DB_ID` — Notion integration
 
-## Checkout Request
+### One-time external setup (human steps)
 
-Preferred JSON body:
+> These cannot be automated without credentials.
 
-```json
-{
-  "plan": "audit",
-  "email": "buyer@example.com",
-  "source": "garcar-landing",
-  "success_url": "https://garcar.io/success.html",
-  "cancel_url": "https://garcar.io/checkout.html"
-}
-```
+- [ ] Create a `production` GitHub Environment at Settings → Environments → New environment.
+      Add required reviewers so every production deploy requires approval.
+- [ ] Create the Stripe webhook endpoint pointing to `$APP_BASE_URL/stripe-webhook`
+      with events: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`,
+      `customer.subscription.created/updated/deleted`, `payment_intent.succeeded`.
+- [ ] Set up Railway service and copy `RAILWAY_TOKEN` into GitHub Secrets.
+- [ ] Provision a PostgreSQL database (Railway Postgres add-on or Supabase) and set `DATABASE_URL`.
+- [ ] Configure Resend account and verify sender domain.
 
-Backward-compatible query params still work:
+### Running locally
 
-```bash
-curl -X POST "https://garcar-payments.up.railway.app/create-checkout-session?plan=audit&email=buyer@example.com"
-```
-
-## Secrets — Single Source of Truth
-
-**All secrets live in one place:**
-
-https://github.com/Garrettc123/garcar-payments/settings/secrets/actions
-
-Full canonical list, activation sequence, and naming rules: **[SECRETS.md](./SECRETS.md)**  
-Zero copy-paste bootstrap: **[AUTOKEY.md](./AUTOKEY.md)**  
-Step-by-step go-live: **[ACTIVATION.md](./ACTIVATION.md)**
-
-| Variable | Source |
-|----------|--------|
-| `RAILWAY_TOKEN` | railway.app → Account → Tokens |
-| `STRIPE_SECRET_KEY` | Stripe Dashboard → Developers → API Keys |
-| `STRIPE_WEBHOOK_SECRET` | Auto-written by autokey-bootstrap |
-| `STRIPE_PRICE_AUDIT` | Stripe Product/Price for one-time audit |
-| `STRIPE_PRICE_DEALDESK` | Stripe Product/Price for one-time setup |
-| `STRIPE_PRICE_STARTER` | Stripe recurring price |
-| `STRIPE_PRICE_PRO` | Stripe recurring price |
-| `STRIPE_PRICE_AGENCY` | Stripe recurring price |
-| `APP_BASE_URL` | Railway service domain |
-| `DATABASE_URL` | Postgres connection string |
-| `CORS_ALLOW_ORIGINS` | Comma-separated allowed origins; use `*` for early launch |
-
-## Deploy
-
-1. Set secrets once (link above).
-2. Run Autokey Bootstrap once.
-3. Every push to `main` deploys automatically.
-
-```bash
-git push origin main
-```
-
-## Local dev
-
-```bash
-cp .env.example .env   # or .env.template
-pip install -r requirements.txt
+```sh
+cp .env.example .env
+# Fill in .env with real values
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
-## Revenue Integration Contract
+### Running tests
 
-1. Landing page sends `plan` + buyer `email` to `/create-checkout-session`.
-2. API returns `checkout_url`.
-3. Browser redirects buyer to Stripe Checkout.
-4. Stripe sends payment/subscription events to `/stripe-webhook`.
-5. Billing events are persisted for onboarding, fulfillment, and revenue reporting.
+```sh
+pip install -r requirements-dev.txt pydantic-settings resend itsdangerous
+pytest tests/ -v
+```
+
+### Running database migrations
+
+```sh
+alembic upgrade head
+```
+
+### Docker
+
+```sh
+docker build -t garcar-payments .
+docker run -p 8000:8000 --env-file .env garcar-payments
+```
+
+## API overview
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/livez` | Liveness probe |
+| GET | `/readyz` | Readiness probe |
+| GET | `/health` | Offer catalog status |
+| GET | `/pricing` | Public pricing |
+| POST | `/create-checkout-session` | Create Stripe Checkout session |
+| POST | `/stripe-webhook` | Receive Stripe events |
+| GET | `/download` | Serve signed download link |
+| GET | `/success` | Post-payment success page |
+| GET | `/mrr` | MRR summary (requires Supabase) |
+
+## Architecture
+
+```
+Stripe ──► /stripe-webhook ──► BillingEvent (idempotent)
+                            ──► FulfillmentJob (pending)
+                                    │
+                            worker.run_pending()
+                                    │
+                            DownloadEntitlement + email
+```
+
+See [AUTOKEY.md](./AUTOKEY.md) for OIDC/keyless authentication design.
+See [RUNBOOK.md](./RUNBOOK.md) for operational procedures.

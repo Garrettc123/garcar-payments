@@ -1,0 +1,99 @@
+# Encrypted PostgreSQL backup with offsite-copy interface and restore-drill.
+# Runs daily at 02:00 UTC.  Manual trigger available for on-demand backup.
+# NEVER store plaintext dumps — all output is AES-256-encrypted before upload.
+name: Database Backup
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      restore_drill:
+        description: "Run restore integrity drill after backup"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: Encrypted backup
+    runs-on: ubuntu-latest
+    if: ${{ secrets.DATABASE_URL != '' || true }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install pg_dump + openssl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client openssl
+
+      - name: Dump and encrypt database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL not set — skipping dump (no Postgres configured)"
+            exit 0
+          fi
+          if [ -z "$BACKUP_ENCRYPTION_KEY" ]; then
+            echo "BACKUP_ENCRYPTION_KEY not set — cannot create secure backup"
+            exit 1
+          fi
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          DUMP_FILE="/tmp/garcar_backup_${TIMESTAMP}.sql"
+          ENCRYPTED_FILE="/tmp/garcar_backup_${TIMESTAMP}.sql.enc"
+
+          pg_dump "$DATABASE_URL" > "$DUMP_FILE"
+          echo "[BACKUP] Dump size: $(wc -c < "$DUMP_FILE") bytes"
+
+          openssl enc -aes-256-cbc -pbkdf2 -iter 100000 \
+            -pass env:BACKUP_ENCRYPTION_KEY \
+            -in  "$DUMP_FILE" \
+            -out "$ENCRYPTED_FILE"
+
+          sha256sum "$ENCRYPTED_FILE" > "${ENCRYPTED_FILE}.sha256"
+          echo "[BACKUP] Encrypted backup: $ENCRYPTED_FILE"
+          echo "ENCRYPTED_FILE=$ENCRYPTED_FILE" >> $GITHUB_ENV
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          rm -f "$DUMP_FILE"  # remove plaintext
+
+      - name: Upload encrypted backup artifact
+        if: env.ENCRYPTED_FILE != ''
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: db-backup-${{ env.TIMESTAMP }}
+          path: |
+            /tmp/garcar_backup_*.sql.enc
+            /tmp/garcar_backup_*.sql.enc.sha256
+          retention-days: 30
+
+      - name: Restore drill (integrity check)
+        if: ${{ inputs.restore_drill == 'true' && env.ENCRYPTED_FILE != '' }}
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          DECRYPTED="/tmp/restore_drill_${{ env.TIMESTAMP }}.sql"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+            -pass env:BACKUP_ENCRYPTION_KEY \
+            -in "${{ env.ENCRYPTED_FILE }}" \
+            -out "$DECRYPTED"
+
+          LINES=$(wc -l < "$DECRYPTED")
+          echo "[DRILL] Decrypted restore file: $LINES lines"
+          if [ "$LINES" -lt 5 ]; then
+            echo "[DRILL] FAIL — restored dump appears empty or corrupt"
+            exit 1
+          fi
+          grep -q "PostgreSQL database dump" "$DECRYPTED" && echo "[DRILL] PASS — valid pg_dump header found"
+          rm -f "$DECRYPTED"
