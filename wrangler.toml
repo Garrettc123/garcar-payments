@@ -1,0 +1,32 @@
+# Garcar Payments — Cloudflare Workers
+# Full stack: FastAPI + Queues + Cron + Secrets via AutoKey
+
+name = "garcar-payments"
+main = "app/entry.py"                    # thin ASGI entrypoint (see scripts)
+compatibility_date = "2026-08-16"
+compatibility_flags = ["python_workers"]
+
+# ---------- Queues (Stripe durable processing) ----------
+[[queues.producers]]
+queue = "stripe-events"
+binding = "STRIPE_QUEUE"
+
+[[queues.consumers]]
+queue = "stripe-events"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "stripe-events-dlq"
+
+# ---------- Optional Cron Triggers (agents / reporting) ----------
+# [[triggers.crons]]
+# crons = ["0 8 * * *"]                 # daily revenue report 08:00 UTC
+
+# ---------- Observability (Grafana-ready) ----------
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# Secrets are NEVER stored here.
+# They are pushed by AutoKey (scripts/autokey_bootstrap_cf.py)
+# or via: npx wrangler secret put <NAME>
