@@ -1,0 +1,115 @@
+name: Full End-to-End Auto Configure (Cloudflare)
+
+# Run this ONCE (or whenever you want a full re-wire).
+# It creates Queues, runs AutoKey (secrets + Stripe), deploys the Worker.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: production
+        type: choice
+        options: [production, staging]
+      app_base_url:
+        description: "Workers URL after first deploy (e.g. https://garcar-payments.xxx.workers.dev)"
+        required: true
+      skip_deploy:
+        description: "Skip final deploy (only configure secrets/queues)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: autoconfigure-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    name: Auto Configure
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Validate required secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          missing=""
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "$STRIPE_SECRET_KEY" ]   && missing="$missing STRIPE_SECRET_KEY"
+          if [ -n "$missing" ]; then
+            echo "Missing secrets:$missing"
+            echo "Add them here: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "Required secrets present"
+
+      - name: Run full AutoKey (Queues + Stripe + Secrets)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          APP_BASE_URL: ${{ inputs.app_base_url }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
+          CORS_ALLOW_ORIGINS: ${{ secrets.CORS_ALLOW_ORIGINS }}
+          HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DOWNLOAD_SIGNING_SECRET: ${{ secrets.DOWNLOAD_SIGNING_SECRET }}
+        run: python scripts/autokey_bootstrap_cf.py
+
+      - name: Deploy Worker
+        if: ${{ inputs.skip_deploy != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
+
+      - name: Health check
+        if: ${{ inputs.skip_deploy != true }}
+        run: |
+          URL="${{ inputs.app_base_url }}"
+          echo "Waiting 20s for Worker to become ready..."
+          sleep 20
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/health" || echo "000")
+            echo "Attempt $i → HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check did not return 200 — check Cloudflare dashboard logs"
+          exit 1
+
+      - name: Summary
+        run: |
+          echo "=============================================="
+          echo " GARCAR CLOUDFLARE AUTO-CONFIGURE COMPLETE"
+          echo "=============================================="
+          echo "URL      : ${{ inputs.app_base_url }}"
+          echo "Webhook  : ${{ inputs.app_base_url }}/stripe-webhook"
+          echo "Queues   : stripe-events + stripe-events-dlq"
+          echo "Env      : ${{ inputs.environment }}"
+          echo "Secrets  : pushed via AutoKey"
+          echo "=============================================="

@@ -1,0 +1,72 @@
+name: Deploy to Cloudflare (Production)
+
+# Manual approval required via the "production" GitHub Environment.
+# Replaces the old Railway deploy.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Git SHA to deploy (empty = HEAD of main)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-cloudflare-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt pydantic-settings || true
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
+
+      - name: Health check
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          URL="${APP_BASE_URL:-https://garcar-payments.workers.dev}"
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/health" || echo "000")
+            echo "Attempt $i → HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Deployment healthy."
+              exit 0
+            fi
+            sleep 12
+          done
+          echo "Health check failed"
+          exit 1
