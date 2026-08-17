@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Garcar AutoKey — Cloudflare edition (end-to-end)
-
-One run does everything:
-  1. Validates required GitHub / env secrets
-  2. Creates Stripe products + prices (idempotent)
-  3. Registers / rotates Stripe webhook against Workers URL
-  4. Pushes every secret into Cloudflare Workers
-  5. Optionally creates Queues if missing
-"""
-
+"""Garcar AutoKey — Cloudflare edition"""
 from __future__ import annotations
 
 import json
@@ -25,10 +15,12 @@ import urllib.request
 def run(cmd: list[str], check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess:
     print(f"> {' '.join(cmd)}")
     r = subprocess.run(cmd, capture_output=True, text=True, input=input_text)
+    if r.stdout:
+        print(r.stdout[-2000:] if len(r.stdout) > 2000 else r.stdout)
+    if r.stderr:
+        print(r.stderr[-2000:] if len(r.stderr) > 2000 else r.stderr, file=sys.stderr)
     if check and r.returncode != 0:
-        print(r.stdout)
-        print(r.stderr, file=sys.stderr)
-        sys.exit(f"Command failed: {cmd}")
+        sys.exit(f"Command failed ({r.returncode}): {cmd}")
     return r
 
 
@@ -47,7 +39,6 @@ def stripe(endpoint: str, method: str = "GET", data: dict | None = None) -> dict
 
 
 def ensure_product(name: str, amount_cents: int, mode: str) -> str:
-    """Return active price ID, creating product+price if needed."""
     q = urllib.parse.quote(f"name:'{name}'")
     res = stripe(f"products/search?query={q}")
     if res.get("data"):
@@ -75,26 +66,27 @@ def ensure_product(name: str, amount_cents: int, mode: str) -> str:
 
 
 def ensure_queues():
-    """Create stripe-events + DLQ if they do not already exist."""
     print("[+] Ensuring Cloudflare Queues exist...")
     r = run(["npx", "wrangler", "queues", "list"], check=False)
-    existing = r.stdout or ""
+    existing = (r.stdout or "") + (r.stderr or "")
     for q in ("stripe-events", "stripe-events-dlq"):
-        if q not in existing:
-            print(f"    Creating queue: {q}")
-            run(["npx", "wrangler", "queues", "create", q])
-        else:
+        if q in existing:
             print(f"    Queue already exists: {q}")
+            continue
+        print(f"    Creating queue: {q}")
+        cr = run(["npx", "wrangler", "queues", "create", q], check=False)
+        if cr.returncode != 0:
+            print(f"    WARN: could not create {q} (may already exist or need account permissions)")
 
 
 def wrangler_secret(name: str, value: str):
     if not value:
         print(f"  skip {name} (empty)")
         return
-    r = run(["npx", "wrangler", "secret", "put", name], check=False, input_text=value)
+    r = run(["npx", "wrangler", "secret", "put", name, "--name", "garcar-payments"], check=False, input_text=value)
     if r.returncode != 0:
-        print(r.stderr, file=sys.stderr)
-        sys.exit(f"Failed to put secret {name}")
+        print(f"  WARN: secret put failed for {name} — Worker may not exist yet")
+        return
     print(f"  ✓ {name}")
 
 
@@ -104,14 +96,10 @@ def main() -> None:
     if missing:
         sys.exit(f"Missing required env: {', '.join(missing)}")
 
-    os.environ["CLOUDFLARE_API_TOKEN"] = os.environ["CLOUDFLARE_API_TOKEN"]
-
     print("=== Garcar AutoKey — Cloudflare End-to-End ===")
 
-    # 0. Queues
     ensure_queues()
 
-    # 1. Stripe catalog
     prices = {
         "STRIPE_PRICE_AUDIT": ensure_product("Operational Audit", 19700, "payment"),
         "STRIPE_PRICE_DEALDESK": ensure_product("AI Deal Desk Setup", 49700, "payment"),
@@ -122,18 +110,14 @@ def main() -> None:
 
     app_url = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
     if not app_url:
-        app_url = os.environ.get(
-            "WORKERS_URL",
-            "https://garcar-payments.<your-subdomain>.workers.dev",
-        )
+        app_url = "https://garcar-payments.workers.dev"
     webhook_url = f"{app_url}/stripe-webhook"
 
-    # 2. Stripe webhook (rotate if already present)
     print(f"[+] Ensuring webhook → {webhook_url}")
     endpoints = stripe("webhook_endpoints")
     for ep in endpoints.get("data", []):
         if ep["url"] == webhook_url:
-            print(f"    Deleting old endpoint {ep['id']} to rotate secret...")
+            print(f"    Deleting old endpoint {ep['id']}...")
             stripe(f"webhook_endpoints/{ep['id']}", method="DELETE")
             break
 
@@ -157,7 +141,6 @@ def main() -> None:
 
     download_secret = os.environ.get("DOWNLOAD_SIGNING_SECRET") or secrets.token_hex(32)
 
-    # 3. Push secrets
     print("[+] Pushing secrets into Cloudflare Workers...")
     secrets_map = {
         "STRIPE_SECRET_KEY": os.environ["STRIPE_SECRET_KEY"],
@@ -167,20 +150,11 @@ def main() -> None:
         "ENVIRONMENT": os.environ.get("ENVIRONMENT", "production"),
         **prices,
     }
-
-    optional = [
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_KEY",
-        "DATABASE_URL",
-        "LINEAR_API_KEY",
-        "LINEAR_TEAM_ID",
-        "NOTION_TOKEN",
-        "NOTION_REVENUE_DB_ID",
-        "CORS_ALLOW_ORIGINS",
-        "HUBSPOT_API_KEY",
-        "RESEND_API_KEY",
-    ]
-    for k in optional:
+    for k in [
+        "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "DATABASE_URL",
+        "LINEAR_API_KEY", "LINEAR_TEAM_ID", "NOTION_TOKEN", "NOTION_REVENUE_DB_ID",
+        "CORS_ALLOW_ORIGINS", "HUBSPOT_API_KEY", "RESEND_API_KEY",
+    ]:
         if os.environ.get(k):
             secrets_map[k] = os.environ[k]
 
@@ -190,8 +164,6 @@ def main() -> None:
     print("[+] AutoKey complete.")
     print(f"    Service URL : {app_url}")
     print(f"    Webhook URL : {webhook_url}")
-    print("    Queues      : stripe-events + stripe-events-dlq")
-    print("    Next step   : deploy (already done by the workflow if you used it)")
 
 
 if __name__ == "__main__":
