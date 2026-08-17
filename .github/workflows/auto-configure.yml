@@ -1,8 +1,5 @@
 name: Full End-to-End Auto Configure (Cloudflare)
 
-# Run this ONCE (or whenever you want a full re-wire).
-# It creates Queues, runs AutoKey (secrets + Stripe), deploys the Worker.
-
 on:
   workflow_dispatch:
     inputs:
@@ -13,7 +10,7 @@ on:
         type: choice
         options: [production, staging]
       app_base_url:
-        description: "Workers URL after first deploy (e.g. https://garcar-payments.xxx.workers.dev)"
+        description: "Workers URL (e.g. https://garcar-payments.<subdomain>.workers.dev)"
         required: true
       skip_deploy:
         description: "Skip final deploy (only configure secrets/queues)"
@@ -37,12 +34,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "22"
 
       - name: Install wrangler
         run: npm install -g wrangler@latest
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh && echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Validate required secrets
         env:
@@ -54,7 +58,7 @@ jobs:
           [ -z "$STRIPE_SECRET_KEY" ]   && missing="$missing STRIPE_SECRET_KEY"
           if [ -n "$missing" ]; then
             echo "Missing secrets:$missing"
-            echo "Add them here: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 1
           fi
           echo "Required secrets present"
@@ -76,40 +80,48 @@ jobs:
           HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DOWNLOAD_SIGNING_SECRET: ${{ secrets.DOWNLOAD_SIGNING_SECRET }}
-        run: python scripts/autokey_bootstrap_cf.py
+        run: |
+          set -e
+          python3 --version
+          python3 scripts/autokey_bootstrap_cf.py
 
       - name: Deploy Worker
-        if: ${{ inputs.skip_deploy != true }}
+        if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy
+        run: |
+          set -e
+          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy.log
+          echo "--- deploy log tail ---"
+          tail -50 deploy.log || true
 
       - name: Health check
-        if: ${{ inputs.skip_deploy != true }}
+        if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         run: |
           URL="${{ inputs.app_base_url }}"
-          echo "Waiting 20s for Worker to become ready..."
-          sleep 20
-          for i in 1 2 3 4 5; do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/health" || echo "000")
+          echo "Waiting 25s for Worker..."
+          sleep 25
+          for i in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
             echo "Attempt $i → HTTP $CODE"
+            cat /tmp/hbody 2>/dev/null || true
             if [ "$CODE" = "200" ]; then
               echo "Healthy."
               exit 0
             fi
-            sleep 10
+            sleep 12
           done
-          echo "Health check did not return 200 — check Cloudflare dashboard logs"
+          echo "Health check did not return 200 — check Cloudflare dashboard"
           exit 1
 
       - name: Summary
+        if: always()
         run: |
           echo "=============================================="
-          echo " GARCAR CLOUDFLARE AUTO-CONFIGURE COMPLETE"
+          echo " GARCAR CLOUDFLARE AUTO-CONFIGURE"
           echo "=============================================="
           echo "URL      : ${{ inputs.app_base_url }}"
           echo "Webhook  : ${{ inputs.app_base_url }}/stripe-webhook"
           echo "Queues   : stripe-events + stripe-events-dlq"
           echo "Env      : ${{ inputs.environment }}"
-          echo "Secrets  : pushed via AutoKey"
           echo "=============================================="
