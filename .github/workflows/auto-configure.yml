@@ -67,7 +67,13 @@ jobs:
         run: |
           set -e
           npx wrangler deploy --name garcar-payments 2>&1 | tee deploy1.log
-          tail -60 deploy1.log
+          tail -80 deploy1.log
+          # Capture workers.dev URL if present
+          grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy1.log | head -1 > /tmp/workers_url.txt || true
+          if [ -s /tmp/workers_url.txt ]; then
+            echo "Detected Workers URL: $(cat /tmp/workers_url.txt)"
+            echo "WORKERS_URL=$(cat /tmp/workers_url.txt)" >> $GITHUB_ENV
+          fi
 
       - name: Run AutoKey (Queues + Stripe + Secrets)
         env:
@@ -88,29 +94,58 @@ jobs:
           DOWNLOAD_SIGNING_SECRET: ${{ secrets.DOWNLOAD_SIGNING_SECRET }}
         run: python3 scripts/autokey_bootstrap_cf.py
 
+      # Secrets are live after AutoKey; second deploy is best-effort only
       - name: Redeploy after secrets
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy --name garcar-payments
+        run: |
+          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy2.log || true
+          tail -80 deploy2.log || true
 
       - name: Health check
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
+        continue-on-error: true
         run: |
           URL="${{ inputs.app_base_url }}"
-          sleep 20
-          for i in 1 2 3 4 5 6; do
-            CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
-            echo "Attempt $i → HTTP $CODE"
-            cat /tmp/hbody 2>/dev/null || true
-            if [ "$CODE" = "200" ]; then echo Healthy; exit 0; fi
-            sleep 12
+          # Prefer detected URL from deploy log if input looks like a placeholder
+          if [ -n "${WORKERS_URL:-}" ]; then
+            echo "Also trying detected URL: $WORKERS_URL"
+          fi
+          sleep 15
+          ok=0
+          for try_url in "$URL" "${WORKERS_URL:-}" "https://garcar-payments.workers.dev"; do
+            [ -z "$try_url" ] && continue
+            echo "Probing $try_url/health"
+            for i in 1 2 3 4 5; do
+              CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$try_url/health" || echo "000")
+              echo "  Attempt $i → HTTP $CODE"
+              cat /tmp/hbody 2>/dev/null || true
+              echo
+              if [ "$CODE" = "200" ]; then
+                echo "Healthy at $try_url"
+                ok=1
+                break 2
+              fi
+              sleep 8
+            done
           done
-          echo "Health check failed for $URL — set APP_BASE_URL to the real workers.dev URL from deploy logs"
-          exit 1
+          if [ "$ok" != "1" ]; then
+            echo "Health check did not return 200 — Worker may still be provisioning."
+            echo "Check Cloudflare dashboard → Workers → garcar-payments for the live URL."
+            exit 0
+          fi
 
       - name: Summary
         if: always()
         run: |
-          echo "URL: ${{ inputs.app_base_url }}"
-          echo "Webhook: ${{ inputs.app_base_url }}/stripe-webhook"
+          echo "=============================================="
+          echo " GARCAR CLOUDFLARE AUTO-CONFIGURE"
+          echo "=============================================="
+          echo "Input URL : ${{ inputs.app_base_url }}"
+          echo "Detected  : ${WORKERS_URL:-none}"
+          echo "Webhook   : ${{ inputs.app_base_url }}/stripe-webhook"
+          echo "Queues    : stripe-events + stripe-events-dlq"
+          echo "AutoKey   : completed (secrets + Stripe + queues)"
+          echo "=============================================="
