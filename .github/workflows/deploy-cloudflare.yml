@@ -1,0 +1,65 @@
+name: Deploy to Cloudflare (Production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Git SHA to deploy (empty = HEAD of main)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-cloudflare-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -e
+          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy.log
+          tail -80 deploy.log
+
+      - name: Health check
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          URL="${APP_BASE_URL:-https://garcar-payments.workers.dev}"
+          for i in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
+            echo "Attempt $i → HTTP $CODE"
+            cat /tmp/hbody 2>/dev/null || true
+            if [ "$CODE" = "200" ]; then
+              echo "Deployment healthy."
+              exit 0
+            fi
+            sleep 12
+          done
+          echo "Health check failed for $URL"
+          exit 1

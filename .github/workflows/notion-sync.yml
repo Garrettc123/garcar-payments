@@ -1,4 +1,4 @@
-name: "\U0001F4DA Notion Revenue Sync"
+name: "📚 Notion Revenue Sync"
 
 on:
   schedule:
@@ -10,14 +10,20 @@ jobs:
     name: Sync MRR to Notion
     runs-on: ubuntu-latest
     steps:
-      - name: Check required secrets
+      - name: Resolve service URL + check secrets
         env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
         run: |
-          if [ -z "$GARCAR_PAYMENTS_URL" ]; then
-            echo "⚠️ GARCAR_PAYMENTS_URL not configured — skipping"
+          # Prefer APP_BASE_URL (canonical). Fall back to GARCAR_PAYMENTS_URL alias.
+          if [ -n "$APP_BASE_URL" ]; then
+            echo "SERVICE_URL=$APP_BASE_URL" >> $GITHUB_ENV
+          elif [ -n "$GARCAR_PAYMENTS_URL" ]; then
+            echo "SERVICE_URL=$GARCAR_PAYMENTS_URL" >> $GITHUB_ENV
+          else
+            echo "⚠️ APP_BASE_URL / GARCAR_PAYMENTS_URL not configured — skipping"
             echo "SKIP=true" >> $GITHUB_ENV
             exit 0
           fi
@@ -49,14 +55,13 @@ jobs:
       - name: Sync MRR to Notion
         if: env.SKIP != 'true'
         env:
-          GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
         run: |
           python - <<'EOF'
           import requests, os, datetime, json
 
-          payments_url = os.environ["GARCAR_PAYMENTS_URL"]
+          payments_url = os.environ["SERVICE_URL"].rstrip("/")
           notion_token = os.environ["NOTION_TOKEN"]
           db_id        = os.environ["NOTION_REVENUE_DB_ID"]
 
@@ -64,8 +69,8 @@ jobs:
           r = requests.get(f"{payments_url}/mrr", timeout=15)
           r.raise_for_status()
           data = r.json()
-          mrr            = data["mrr_usd"]
-          total_payments = data["total_payments"]
+          mrr            = data.get("mrr_usd", 0)
+          total_payments = data.get("total_payments") or data.get("active_subscriptions", 0)
           now            = datetime.datetime.utcnow().isoformat()
 
           print(f"MRR: ${mrr} | Payments: {total_payments}")

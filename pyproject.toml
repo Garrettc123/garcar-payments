@@ -1,0 +1,16 @@
+[project]
+name = "garcar-payments"
+version = "1.0.0"
+description = "Garcar Payments on Cloudflare Workers"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "pydantic-settings",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+]

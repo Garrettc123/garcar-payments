@@ -28,8 +28,59 @@ NOTION_CUSTOMER_DB_ID = os.getenv("NOTION_CUSTOMER_DB_ID", "024f6838e7b745cca1db
 NOTION_URL            = "https://api.notion.com/v1"
 NOTION_VERSION        = "2022-06-28"
 
+# ── Supabase config ────────────────────────────────────────────────────────────
+SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+
 # ── Linear state cache ─────────────────────────────────────────────────────────────
 _LINEAR_STATE_CACHE: dict[str, str] = {}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# SUPABASE
+# ────────────────────────────────────────────────────────────────────────────
+
+def _supabase_append_ledger(email: str, amount_usd: float, stripe_event_id: str = "") -> None:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/gc_ledger"
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    payload = {
+        "customer_email": email,
+        "amount_total": int(amount_usd * 100),
+        "currency": "usd",
+        "all_ok": True,
+    }
+    if stripe_event_id:
+        payload["stripe_event_id"] = stripe_event_id
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=5.0)
+        r.raise_for_status()
+        print(f"[SUPABASE] gc_ledger +${amount_usd:.2f} for {email}")
+    except Exception as e:
+        print(f"[SUPABASE] gc_ledger write failed: {e}")
+
+
+def _supabase_query_ledger() -> list:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return []
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/gc_ledger"
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    }
+    params = {"all_ok": "eq.true", "select": "amount_total,customer_email,created_at"}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=5.0)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return []
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -216,7 +267,6 @@ def _handle_invoice_paid(data):
     if not sub_id:
         return
 
-    # Holographic fingerprint: all 3 systems in one atomic hash
     fp = holographic_fingerprint({
         "stripe_subscription": sub_id,
         "stripe_invoice":      invoice,
@@ -242,13 +292,9 @@ def _handle_invoice_paid(data):
             ), priority=3)
 
     _notion_upsert_customer(sub_id, customer, email, "DFW Lead Gen", "Active", amount)
-    ledger = Path("logs/ledger.jsonl")
-    total, count = 0.0, 0
-    if ledger.exists():
-        entries = [json.loads(l) for l in ledger.read_text().splitlines() if l]
-        total = sum(e["amount_usd"] for e in entries)
-        count = len(entries)
-    _notion_log_revenue(total, count, fingerprint=fp)
+    rows = _supabase_query_ledger()
+    total = sum(r.get("amount_total", 0) / 100 for r in rows)
+    _notion_log_revenue(total, len(rows), fingerprint=fp)
 
 def _handle_payment_failed(data):
     sub_id   = data.get("subscription")
@@ -261,7 +307,7 @@ def _handle_payment_failed(data):
         _linear_update_state(existing["id"], "at risk")
     else:
         _linear_create_issue(
-            title=f"[Stripe] ⚠️ Payment Failed: {sub_id}",
+            title=f"[Stripe] Payment Failed: {sub_id}",
             description=f"## Payment Failed\n\n- **Sub:** `{sub_id}`\n- **Customer:** `{email}`\n\n_Trigger churn prevention agent immediately._",
             priority=1)
     _notion_upsert_customer(sub_id, customer, email, "DFW Lead Gen", "At Risk", 0.0)
@@ -315,7 +361,7 @@ async def stripe_webhook(req: Request):
 
     event_type = event["type"]
     data       = event["data"]["object"]
-    # HMAC-sign the raw payload for internal integrity logging
+    event_id   = event.get("id", "")
     payload_mac = hmac_sign(payload, context="stripe-webhook")
     print(f"[STRIPE] {event_type} | integrity={payload_mac[:16]}...")
 
@@ -327,7 +373,7 @@ async def stripe_webhook(req: Request):
         email  = data.get("customer_details", {}).get("email") or data.get("customer_email", "unknown")
         amount = data.get("amount_paid", 0) / 100
         _generate_contract(email, amount)
-        _log_payment(email, amount)
+        _log_payment(email, amount, stripe_event_id=event_id)
         _handle_invoice_paid(data)
     elif event_type == "invoice.payment_failed":
         _handle_payment_failed(data)
@@ -335,14 +381,13 @@ async def stripe_webhook(req: Request):
         email  = data.get("customer_details", {}).get("email", "unknown")
         amount = data.get("amount_total", 0) / 100
         _generate_contract(email, amount)
-        _log_payment(email, amount)
+        _log_payment(email, amount, stripe_event_id=event_id)
 
     return JSONResponse({"status": "ok", "event": event_type})
 
 
 @app.get("/state")
 def system_state():
-    """Holographic system state — fingerprint of all live config in one hash."""
     fp = holographic_fingerprint({
         "linear_team":        LINEAR_TEAM_ID,
         "linear_project":     LINEAR_PROJECT_ID,
@@ -355,12 +400,25 @@ def system_state():
 
 @app.get("/mrr")
 def get_mrr():
+    rows = _supabase_query_ledger()
+    if rows:
+        now = datetime.datetime.utcnow()
+        thirty_days_ago = now - datetime.timedelta(days=30)
+        recent = [
+            r for r in rows
+            if datetime.datetime.fromisoformat(
+                r.get("created_at", "1970-01-01").replace("Z", "+00:00")
+            ).replace(tzinfo=None) >= thirty_days_ago
+        ]
+        mrr = round(sum(r.get("amount_total", 0) / 100 for r in recent), 2)
+        return {"mrr_usd": mrr, "total_payments": len(recent), "source": "supabase"}
+
     ledger = Path("logs/ledger.jsonl")
     if not ledger.exists():
-        return {"mrr_usd": 0, "total_payments": 0}
+        return {"mrr_usd": 0, "total_payments": 0, "source": "empty"}
     entries = [json.loads(l) for l in ledger.read_text().splitlines() if l]
     return {"mrr_usd": round(sum(e["amount_usd"] for e in entries), 2),
-            "total_payments": len(entries)}
+            "total_payments": len(entries), "source": "local_file"}
 
 
 @app.get("/health")
@@ -383,21 +441,20 @@ def _generate_contract(email: str, amount: float):
         "Binding upon receipt of cleared funds.", "",
         "Garcar Enterprise LLC - Grandview, TX",
     ])
-    # Ed25519 sign the contract
     sig_data = sign_contract(text)
     sig_json = json.dumps(sig_data, indent=2)
-
     out = CONTRACTS_DIR / f"contract_{email.replace('@','_')}_{now}.txt"
     out.write_text(text + f"\n\n--- CRYPTOGRAPHIC SIGNATURE ---\n{sig_json}\n")
     print(f"[CONTRACT] Signed & saved: {out}")
 
 
-def _log_payment(email: str, amount: float):
+def _log_payment(email: str, amount: float, stripe_event_id: str = ""):
     ledger = Path("logs/ledger.jsonl")
     entry  = {"ts": datetime.datetime.now().isoformat(), "email": email, "amount_usd": amount}
     with open(ledger, "a") as f:
         f.write(json.dumps(entry) + "\n")
     print(f"[LEDGER] +${amount} from {email}")
+    _supabase_append_ledger(email, amount, stripe_event_id=stripe_event_id)
 
 
 if __name__ == "__main__":

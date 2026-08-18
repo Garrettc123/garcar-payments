@@ -1,0 +1,14 @@
+# DISABLED: Automatic PR approval and merge removed for security.
+# All merges to main require human review via branch protection rules.
+# Production deployments are gated by the "production" GitHub Environment.
+name: Auto Approve & Merge (DISABLED)
+
+on:
+  workflow_dispatch:  # Only runnable manually — never fires automatically
+
+jobs:
+  notice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notice
+        run: echo "Automatic PR approval and merge has been disabled. Merges require human review."

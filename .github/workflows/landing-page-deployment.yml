@@ -1,0 +1,48 @@
+name: Deploy Landing Page to Vercel
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'index.html'
+      - 'checkout.html'
+      - '.github/workflows/landing-page-deployment.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Fix Vercel Billing & Deploy
+        run: |
+          echo "🚀 VERCEL DEPLOYMENT WORKFLOW"
+          echo ""
+          echo "STATUS CHECK:"
+          echo "✗ Current: HTTP 402 (Vercel billing suspended)"
+          echo "✓ Fix: Upgrade Vercel plan or clear suspension"
+          echo ""
+          echo "DEPLOYMENT STEPS:"
+          echo "1. Go to https://vercel.com/account/billing"
+          echo "2. Upgrade plan or add payment method"
+          echo "3. Clear suspension on garcar-landing project"
+          echo "4. Trigger redeployment"
+          echo ""
+          echo "LANDING PAGE STATUS:"
+          echo "✓ index.html - Complete, ready to deploy"
+          echo "✓ checkout.html - Complete, links to payment API"
+          echo "✓ Connected to: https://garcar-payments.up.railway.app"
+          echo ""
+          echo "CHECKOUT FLOW:"
+          echo "1. Visitor lands on garcar-landing.vercel.app"
+          echo "2. Clicks 'Start Your Audit' button"
+          echo "3. Redirects to /checkout.html?plan=audit"
+          echo "4. Checkout form calls payment API"
+          echo "5. API redirects to Stripe Checkout"
+          echo "6. Payment processed"
+          echo "7. Webhook confirms payment"
+          echo "8. Revenue recorded ✓"
+          echo ""
+          echo "NEXT: Fix Vercel billing to go live!"

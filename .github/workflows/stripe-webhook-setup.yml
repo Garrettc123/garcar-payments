@@ -1,56 +1,56 @@
-name: Register Stripe Webhook
+name: Stripe Webhook Setup
 
 on:
-  workflow_dispatch:
-  workflow_run:
-    workflows: ["Deploy to Railway"]
-    types: [completed]
+  workflow_dispatch: {}
 
 jobs:
-  register-webhook:
+  setup:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-
     steps:
-      - name: Register or update webhook endpoint
+      - name: Create Stripe webhook endpoint
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
           if [ -z "$STRIPE_SECRET_KEY" ]; then
-            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping webhook registration"
+            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping"
             exit 0
           fi
 
           if [ -z "$APP_BASE_URL" ]; then
-            echo "⚠️  APP_BASE_URL not configured — skipping webhook registration"
+            echo "⚠️  APP_BASE_URL not configured — skipping"
             exit 0
           fi
 
           WEBHOOK_URL="${APP_BASE_URL}/stripe-webhook"
-          echo "Registering webhook at: $WEBHOOK_URL"
+          echo "Registering: $WEBHOOK_URL"
 
           RESPONSE=$(curl -s -X POST https://api.stripe.com/v1/webhook_endpoints \
             -u "$STRIPE_SECRET_KEY:" \
             -d "url=$WEBHOOK_URL" \
-            -d "enabled_events[]=payment_intent.succeeded" \
-            -d "enabled_events[]=payment_intent.payment_failed" \
             -d "enabled_events[]=checkout.session.completed" \
             -d "enabled_events[]=customer.subscription.created" \
             -d "enabled_events[]=customer.subscription.updated" \
             -d "enabled_events[]=customer.subscription.deleted" \
             -d "enabled_events[]=invoice.paid" \
-            -d "enabled_events[]=invoice.payment_failed")
+            -d "enabled_events[]=invoice.payment_failed" \
+            -d "enabled_events[]=payment_intent.succeeded" \
+            -d "enabled_events[]=payment_intent.payment_failed")
+
+          echo "Response: $RESPONSE"
 
           SECRET=$(echo "$RESPONSE" | jq -r '.secret // empty')
           ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
 
           if [ -n "$SECRET" ]; then
             WID=$(echo "$RESPONSE" | jq -r '.id')
+            echo "SUCCESS"
             echo "Webhook ID: $WID"
             echo "Signing Secret: $SECRET"
             echo ""
-            echo "ACTION REQUIRED: Set STRIPE_WEBHOOK_SECRET=$SECRET in Railway dashboard and GitHub secrets"
+            echo "=== ACTION REQUIRED ==="
+            echo "Set this in Railway and GitHub secrets:"
+            echo "  STRIPE_WEBHOOK_SECRET=$SECRET"
           elif [ -n "$ERROR" ]; then
             echo "ERROR: $ERROR"
             exit 1

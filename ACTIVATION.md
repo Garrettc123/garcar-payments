@@ -1,99 +1,78 @@
 # 🚀 Garcar Payments — Activation Checklist
 
 This document is the **exact** step-by-step to go from code to live payments.
+All secrets live in **one place**: GitHub Actions secrets. See [SECRETS.md](./SECRETS.md).
 
 ---
 
 ## Step 1 — Create Stripe Products (10 min)
 
 1. Go to [https://dashboard.stripe.com/products](https://dashboard.stripe.com/products)
-2. Click **"+ Add product"** for each MARS tier:
+2. Create the five live offers used by the code:
 
-| Product Name        | Price    | Billing  |
-|---------------------|----------|----------|
-| MARS Starter        | $497/mo  | Monthly  |
-| MARS Professional   | $1,497/mo| Monthly  |
-| MARS Enterprise     | $4,997/mo| Monthly  |
-| MARS Sovereign      | $14,997/mo| Monthly |
+| Offer key | Product Name | Mode | Typical price |
+|-----------|--------------|------|---------------|
+| `audit` | Operational Audit | one-time | $197 |
+| `dealdesk` | AI Deal Desk Setup | one-time | $497 |
+| `starter` | Starter Automation | subscription | monthly |
+| `pro` | Pro Automation | subscription | monthly |
+| `agency` | Agency Automation | subscription | monthly |
 
-3. After creating each product, copy the **Price ID** (starts with `price_`)
-4. Save them — you'll add them in Step 3.
-
----
-
-## Step 2 — Configure Stripe Webhook (5 min)
-
-1. Go to [https://dashboard.stripe.com/webhooks](https://dashboard.stripe.com/webhooks)
-2. Click **"+ Add endpoint"**
-3. Endpoint URL: `https://YOUR_RAILWAY_URL/payments/webhook/stripe`
-4. Select these events:
-   - `customer.subscription.created`
-   - `customer.subscription.deleted`
-   - `invoice.paid`
-   - `invoice.payment_failed`
-   - `checkout.session.completed`
-5. Click **"Add endpoint"** → copy the **Signing secret** (`whsec_...`)
+3. After creating each product, copy the **Price ID** (`price_…`).
+4. These become the five `STRIPE_PRICE_*` secrets in Step 3.
 
 ---
 
-## Step 3 — Set Railway Environment Variables (5 min)
-
-1. Go to [https://railway.app](https://railway.app) → `garcar-payments` project → **Variables** tab
-2. Add ALL of these:
-
-```
-STRIPE_SECRET_KEY          = sk_live_YOUR_LIVE_KEY
-STRIPE_WEBHOOK_SECRET      = whsec_YOUR_WEBHOOK_SECRET
-STRIPE_PRICE_MARS_STARTER       = price_STARTER_ID
-STRIPE_PRICE_MARS_PROFESSIONAL  = price_PROFESSIONAL_ID
-STRIPE_PRICE_MARS_ENTERPRISE    = price_ENTERPRISE_ID
-STRIPE_PRICE_MARS_SOVEREIGN     = price_SOVEREIGN_ID
-NOTION_TOKEN               = secret_YOUR_NOTION_TOKEN
-LINEAR_API_KEY             = lin_api_YOUR_KEY
-RAILWAY_DEPLOY_URL         = https://YOUR_APP.up.railway.app
-```
-
----
-
-## Step 4 — Set GitHub Secrets (3 min)
+## Step 2 — Set GitHub Secrets (the single source of truth)
 
 1. Go to [https://github.com/Garrettc123/garcar-payments/settings/secrets/actions](https://github.com/Garrettc123/garcar-payments/settings/secrets/actions)
-2. Add:
-   - `RAILWAY_TOKEN` — from Railway dashboard → Account → Tokens
-   - `RAILWAY_DEPLOY_URL` — your Railway app URL
-   - `STRIPE_SECRET_KEY`
-   - `STRIPE_WEBHOOK_SECRET`
-   - `NOTION_TOKEN`
-   - `LINEAR_API_KEY`
+2. Add every secret listed in [SECRETS.md](./SECRETS.md).
+
+Minimum required:
+
+```
+RAILWAY_TOKEN
+STRIPE_SECRET_KEY
+APP_BASE_URL
+STRIPE_PRICE_AUDIT
+STRIPE_PRICE_DEALDESK
+STRIPE_PRICE_STARTER
+STRIPE_PRICE_PRO
+STRIPE_PRICE_AGENCY
+```
+
+Optional but recommended: `LINEAR_API_KEY`, `LINEAR_TEAM_ID`, `NOTION_TOKEN`, `NOTION_REVENUE_DB_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `CORS_ALLOW_ORIGINS`, and set `GARCAR_PAYMENTS_URL` = same value as `APP_BASE_URL`.
 
 ---
 
-## Step 5 — Deploy (2 min)
+## Step 3 — Run Autokey Bootstrap (2 min)
 
-Push any commit to `main` OR go to **Actions** tab → **Deploy Garcar Payments** → **Run workflow**.
+1. Open https://github.com/Garrettc123/garcar-payments/actions/workflows/autokey-bootstrap.yml
+2. Click **Run workflow** → choose `production` → Run.
 
-The pipeline will:
-1. ✅ Run tests
-2. 🔒 Scan for hardcoded secrets
-3. 🚂 Deploy to Railway
-4. 💓 Verify `/health` returns 200
+The workflow will:
+- Validate secrets
+- Deploy to Railway
+- Push every env var into Railway
+- Health-check `/health`
+- Register the Stripe webhook at `$APP_BASE_URL/stripe-webhook`
+- Write `STRIPE_WEBHOOK_SECRET` back to Railway
+
+You do **not** need to touch the Railway Variables UI after this.
 
 ---
 
-## Step 6 — Verify Live (2 min)
+## Step 4 — Verify Live (2 min)
 
 ```bash
 # Health check
 curl https://YOUR_APP.up.railway.app/health
 
-# MARS tiers API
-curl https://YOUR_APP.up.railway.app/mars/api/tiers
+# Pricing catalog
+curl https://YOUR_APP.up.railway.app/pricing
 
 # MRR dashboard
-curl https://YOUR_APP.up.railway.app/payments/mrr
-
-# MARS landing page
-open https://YOUR_APP.up.railway.app/mars/
+curl https://YOUR_APP.up.railway.app/mrr
 ```
 
 ---
@@ -102,18 +81,13 @@ open https://YOUR_APP.up.railway.app/mars/
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/mars/` | MARS API pricing landing page |
-| `/mars/checkout/starter` | $497/mo checkout |
-| `/mars/checkout/professional` | $1,497/mo checkout |
-| `/mars/checkout/enterprise` | $4,997/mo checkout |
-| `/mars/checkout/sovereign` | $14,997/mo checkout |
-| `/mars/api/tiers` | JSON tiers for frontend |
-| `/payments/webhook/stripe` | Stripe webhook receiver |
-| `/payments/payment/create-link` | One-time payment link |
-| `/payments/mrr` | Live MRR dashboard |
-| `/health` | Service health |
+| `/health` | Service health + configured offers |
+| `/pricing` | Public plan catalog |
+| `/create-checkout-session` | Start Stripe Checkout |
+| `/stripe-webhook` | Stripe webhook receiver |
+| `/mrr` | Live MRR dashboard |
+| `/success` | Post-payment success |
 
 ---
 
-**Owner:** Garrett Carroll — Garcar Enterprise LLC, Grandview TX  
-**Revenue target:** $50K–$100K MRR via MARS API subscriptions
+**Owner:** Garrett Carroll — Garcar Enterprise LLC, Grandview TX

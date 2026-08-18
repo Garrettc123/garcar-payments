@@ -10,7 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Health check
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.APP_BASE_URL }}/health")
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "⚠️  APP_BASE_URL not configured — skipping health check"
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_BASE_URL/health")
           echo "HTTP $STATUS"
           [ "$STATUS" = "200" ] && echo "✅ Service healthy" || (echo "❌ Service down" && exit 1)
