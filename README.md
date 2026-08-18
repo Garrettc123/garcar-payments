@@ -1,78 +1,83 @@
 # garcar-payments
 
-FastAPI service for Garcar Enterprise payments (Stripe Checkout + webhooks,
-fulfillment, signed download links).
+FastAPI service for Garcar Enterprise payments with Stripe Checkout, verified webhooks, durable fulfillment, Supabase entitlements, CRM onboarding, audit logging, and incident creation.
 
-## Setup checklist
+## End-to-end checkout flow
 
-### Required secrets (set in GitHub → Settings → Secrets → Actions)
+```text
+Stripe checkout.session.completed
+  -> durable BillingEvent + FulfillmentJob
+  -> Stripe payment/customer verification
+  -> HubSpot contact match + Stripe customer link
+  -> Supabase garcar_entitlements upsert
+  -> Asana onboarding project + task
+  -> Notion audit event
+  -> existing download entitlement + email
+  -> COMPLETED
 
-- [ ] `STRIPE_SECRET_KEY` — Stripe live secret key
-- [ ] `STRIPE_WEBHOOK_SECRET` — From Stripe webhook dashboard
-- [ ] `STRIPE_PRICE_AUDIT` — Stripe Price ID for Operational Audit
-- [ ] `STRIPE_PRICE_DEALDESK` — Stripe Price ID for AI Deal Desk Setup
-- [ ] `STRIPE_PRICE_STARTER` — Stripe Price ID for Starter Subscription
-- [ ] `STRIPE_PRICE_PRO` — Stripe Price ID for Pro Subscription
-- [ ] `STRIPE_PRICE_AGENCY` — Stripe Price ID for Agency Subscription
-- [ ] `APP_BASE_URL` — Public service URL (no trailing slash)
-- [ ] `DATABASE_URL` — PostgreSQL connection string
-- [ ] `DOWNLOAD_SIGNING_SECRET` — Random 32-byte hex; generate with `python -c "import secrets; print(secrets.token_hex(32))"`
-- [ ] `RESEND_API_KEY` — Resend transactional email API key
-- [ ] `EMAIL_FROM` — Sender address (e.g. `noreply@garcar.com`)
-- [ ] `RAILWAY_TOKEN` — Railway service deploy token (not account-wide)
-- [ ] `BACKUP_ENCRYPTION_KEY` — Passphrase for AES backup encryption
-
-### Optional secrets
-
-- [ ] `SUPABASE_URL` — Supabase project URL
-- [ ] `SUPABASE_SERVICE_KEY` — Supabase service role key
-- [ ] `CORS_ALLOW_ORIGINS` — Comma-separated allowed origins (default `*`)
-- [ ] `LINEAR_API_KEY`, `LINEAR_TEAM_ID` — Linear integration
-- [ ] `NOTION_TOKEN`, `NOTION_REVENUE_DB_ID` — Notion integration
-
-### One-time external setup (human steps)
-
-> These cannot be automated without credentials.
-
-- [ ] Create a `production` GitHub Environment at Settings → Environments → New environment.
-      Add required reviewers so every production deploy requires approval.
-- [ ] Create the Stripe webhook endpoint pointing to `$APP_BASE_URL/stripe-webhook`
-      with events: `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`,
-      `customer.subscription.created/updated/deleted`, `payment_intent.succeeded`.
-- [ ] Set up Railway service and copy `RAILWAY_TOKEN` into GitHub Secrets.
-- [ ] Provision a PostgreSQL database (Railway Postgres add-on or Supabase) and set `DATABASE_URL`.
-- [ ] Configure Resend account and verify sender domain.
-
-### Running locally
-
-```sh
-cp .env.example .env
-# Fill in .env with real values
-pip install -r requirements-dev.txt
-uvicorn app.main:app --reload
+Any failed stage
+  -> durable stage failure
+  -> retry with exponential backoff
+  -> Linear incident
+  -> dead-letter after MAX_ATTEMPTS
 ```
 
-### Running tests
+Every checkout is correlated by the immutable Stripe event ID. Fulfillment jobs and integration stages are idempotent at the database layer so Stripe retries do not create duplicate logical entitlements.
 
-```sh
-pip install -r requirements-dev.txt pydantic-settings resend itsdangerous
-pytest tests/ -v
-```
+## Production integration secrets
 
-### Running database migrations
+Required for the full orchestration path:
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `DATABASE_URL`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_KEY`
+- `HUBSPOT_ACCESS_TOKEN`
+- `ASANA_ACCESS_TOKEN`
+- `ASANA_WORKSPACE_GID`
+- `NOTION_TOKEN`
+- `NOTION_REVENUE_DB_ID`
+- `LINEAR_API_KEY`
+- `LINEAR_TEAM_ID`
+
+See `.env.example` for the complete environment contract. Secrets are not committed to the repository.
+
+## Database
+
+Run the application migration before production traffic:
 
 ```sh
 alembic upgrade head
 ```
 
-### Docker
+Apply `supabase/migrations/20260818000000_garcar_entitlements.sql` to the Supabase project before enabling entitlement provisioning.
+
+## Running locally
+
+```sh
+cp .env.example .env
+pip install -r requirements-dev.txt
+python -m app.supervisor
+```
+
+The supervisor runs FastAPI and the durable checkout worker together. The worker claims pending jobs atomically and resumes completed stages rather than restarting the whole workflow.
+
+## Running tests
+
+```sh
+pip install -r requirements-dev.txt pydantic-settings resend itsdangerous bandit
+pytest tests/ -v
+```
+
+## Docker
 
 ```sh
 docker build -t garcar-payments .
 docker run -p 8000:8000 --env-file .env garcar-payments
 ```
 
-## API overview
+## API
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -84,18 +89,10 @@ docker run -p 8000:8000 --env-file .env garcar-payments
 | POST | `/stripe-webhook` | Receive Stripe events |
 | GET | `/download` | Serve signed download link |
 | GET | `/success` | Post-payment success page |
-| GET | `/mrr` | MRR summary (requires Supabase) |
+| GET | `/mrr` | MRR summary |
 
-## Architecture
+## Cloudflare
 
-```
-Stripe ──► /stripe-webhook ──► BillingEvent (idempotent)
-                            ──► FulfillmentJob (pending)
-                                    │
-                            worker.run_pending()
-                                    │
-                            DownloadEntitlement + email
-```
+Cloudflare Workers sends Stripe webhook requests to the `stripe-events` durable queue. The queue consumer verifies the Stripe signature, persists the event/job, and executes the same end-to-end orchestration. Queue retries are backed by `stripe-events-dlq`.
 
-See [AUTOKEY.md](./AUTOKEY.md) for OIDC/keyless authentication design.
-See [RUNBOOK.md](./RUNBOOK.md) for operational procedures.
+See `AUTOKEY.md` and `RUNBOOK.md` for deployment and operational procedures.
