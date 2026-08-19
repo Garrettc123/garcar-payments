@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths:
+      - 'app/**'
+      - 'backend/**'
+      - 'tests/**'
+      - 'requirements*.txt'
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-test.txt
+      - name: Run tests
+        run: pytest tests/ -v
+        env:
+          DATABASE_URL: sqlite:///:memory:
+          STRIPE_SECRET_KEY: sk_test_placeholder
+          STRIPE_PRICE_STARTER: price_starter_test
+          STRIPE_PRICE_PRO: price_pro_test
+          STRIPE_PRICE_AGENCY: price_agency_test
+          STRIPE_PRICE_MARS_STARTER: price_mars_starter_test
+          STRIPE_PRICE_MARS_PROFESSIONAL: price_mars_pro_test
