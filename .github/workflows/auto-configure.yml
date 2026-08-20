@@ -45,6 +45,13 @@ jobs:
       - name: Install wrangler
         run: npm install -g wrangler@latest
 
+      - name: Normalise APP_BASE_URL
+        run: |
+          RAW="${{ inputs.app_base_url }}"
+          CLEAN="${RAW%/}"
+          echo "APP_BASE_URL=$CLEAN" >> $GITHUB_ENV
+          echo "Normalised URL: $CLEAN"
+
       - name: Validate required secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -59,7 +66,6 @@ jobs:
           fi
           echo "Required secrets present"
 
-      # Worker must exist before wrangler secret put works
       - name: Deploy Worker (bootstrap)
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         env:
@@ -68,18 +74,24 @@ jobs:
           set -e
           npx wrangler deploy --name garcar-payments 2>&1 | tee deploy1.log
           tail -80 deploy1.log
-          # Capture workers.dev URL if present
           grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy1.log | head -1 > /tmp/workers_url.txt || true
           if [ -s /tmp/workers_url.txt ]; then
-            echo "Detected Workers URL: $(cat /tmp/workers_url.txt)"
-            echo "WORKERS_URL=$(cat /tmp/workers_url.txt)" >> $GITHUB_ENV
+            DETECTED="$(cat /tmp/workers_url.txt)"
+            echo "Detected Workers URL: $DETECTED"
+            echo "WORKERS_URL=$DETECTED" >> $GITHUB_ENV
           fi
+
+      - name: Push APP_BASE_URL as Wrangler secret
+        if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "$APP_BASE_URL" | npx wrangler secret put APP_BASE_URL --name garcar-payments
 
       - name: Run AutoKey (Queues + Stripe + Secrets)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          APP_BASE_URL: ${{ inputs.app_base_url }}
           ENVIRONMENT: ${{ inputs.environment }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -94,7 +106,6 @@ jobs:
           DOWNLOAD_SIGNING_SECRET: ${{ secrets.DOWNLOAD_SIGNING_SECRET }}
         run: python3 scripts/autokey_bootstrap_cf.py
 
-      # Secrets are live after AutoKey; second deploy is best-effort only
       - name: Redeploy after secrets
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         continue-on-error: true
@@ -108,14 +119,10 @@ jobs:
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         continue-on-error: true
         run: |
-          URL="${{ inputs.app_base_url }}"
-          # Prefer detected URL from deploy log if input looks like a placeholder
-          if [ -n "${WORKERS_URL:-}" ]; then
-            echo "Also trying detected URL: $WORKERS_URL"
-          fi
+          BASE_URL="${APP_BASE_URL}"
           sleep 15
           ok=0
-          for try_url in "$URL" "${WORKERS_URL:-}" "https://garcar-payments.workers.dev"; do
+          for try_url in "$BASE_URL" "${WORKERS_URL:-}"; do
             [ -z "$try_url" ] && continue
             echo "Probing $try_url/health"
             for i in 1 2 3 4 5; do
@@ -144,8 +151,10 @@ jobs:
           echo " GARCAR CLOUDFLARE AUTO-CONFIGURE"
           echo "=============================================="
           echo "Input URL : ${{ inputs.app_base_url }}"
+          echo "Clean URL : ${APP_BASE_URL}"
           echo "Detected  : ${WORKERS_URL:-none}"
-          echo "Webhook   : ${{ inputs.app_base_url }}/stripe-webhook"
+          echo "Webhook   : ${APP_BASE_URL}/stripe-webhook"
           echo "Queues    : stripe-events + stripe-events-dlq"
           echo "AutoKey   : completed (secrets + Stripe + queues)"
+          echo "APP_BASE_URL secret pushed to Worker"
           echo "=============================================="
