@@ -1,109 +1,103 @@
-# Cloudflare Workers — Primary Launch Path
+# Cloudflare Workers + D1 — Master Launch Path
 
-**Railway is bypassed.**  
-`garcar-payments` runs on Cloudflare Workers for launch day.
+**This is the final production surface for garcar-payments.**
 
----
+Railway is fully bypassed. The edge stack is:
 
-## Why Cloudflare
-
-- Global edge (low latency for checkout)
-- Durable Queues for Stripe webhooks (no lost events)
-- Python Workers with lazy-loaded FastAPI
-- AutoKey script creates products, prices, webhook, and secrets in one shot
-- No long-running container cost while idle
+- Optimized Python Worker (`app/entry.py`)
+- Durable Stripe Queue
+- D1 (edge SQLite) for events, jobs, entitlements
+- Lazy FastAPI for business routes
+- AutoKey for secrets + products + webhook
 
 ---
 
-## 1. Prerequisites (GitHub Secrets)
+## One-time setup (run once)
 
-```
-CLOUDFLARE_API_TOKEN     # Account → API Tokens → Edit Cloudflare Workers
-STRIPE_SECRET_KEY        # sk_live_...
-```
+```bash
+# 1. Create the D1 database
+npx wrangler d1 create garcar-payments-db
+# → copy the database_id into wrangler.toml
 
-Optional (AutoKey will create prices if missing):
-```
-STRIPE_PRICE_AUDIT
-STRIPE_PRICE_DEALDESK
-STRIPE_PRICE_STARTER
-STRIPE_PRICE_PRO
-STRIPE_PRICE_AGENCY
-DOWNLOAD_SIGNING_SECRET
-RESEND_API_KEY
-APP_BASE_URL             # defaults to https://garcar-payments.<subdomain>.workers.dev
+# 2. Apply schema
+npx wrangler d1 execute garcar-payments-db --file=migrations/0001_d1_init.sql
+
+# 3. Create queues (if not already present)
+npx wrangler queues create stripe-events
+npx wrangler queues create stripe-events-dlq
 ```
 
 ---
 
-## 2. Deploy the Worker
+## Deploy
 
 ```bash
 gh workflow run deploy-cloudflare.yml --repo Garrettc123/garcar-payments --ref main
 ```
 
-Or Actions tab → **Deploy to Cloudflare (Production)** → Run workflow.
+Or:
+
+```bash
+npx wrangler deploy --name garcar-payments
+```
 
 ---
 
-## 3. Bootstrap (prices + webhook + secrets)
-
-From a machine that has the secrets:
+## Bootstrap secrets + Stripe objects
 
 ```bash
 export STRIPE_SECRET_KEY=sk_live_...
 export CLOUDFLARE_API_TOKEN=...
-# optional
-export APP_BASE_URL=https://garcar-payments.<your-subdomain>.workers.dev
+export APP_BASE_URL=https://garcar-payments.<subdomain>.workers.dev
 
 python scripts/autokey_bootstrap_cf.py
 ```
 
-This will:
-- Create / reuse the five Stripe products & prices
-- Ensure `stripe-events` + DLQ queues exist
-- Register the webhook at `$APP_BASE_URL/stripe-webhook`
-- Push every secret into the Worker via `wrangler secret put`
-
 ---
 
-## 4. Smoke Test
+## Verification
 
 ```bash
 URL=https://garcar-payments.<subdomain>.workers.dev
 
 curl -s $URL/health | jq
-curl -s $URL/livez | jq
-curl -s $URL/pricing | jq
+# expect: "edge": true, low ms, optional d1 stats on /readyz
+
+curl -s $URL/readyz | jq
 
 curl -s -X POST $URL/create-checkout-session \
   -H 'Content-Type: application/json' \
-  -d '{"plan":"audit","email":"launch@garcar.com","source":"launch-day"}' | jq
+  -d '{"plan":"audit","email":"launch@garcar.com","source":"master-launch"}' | jq
 ```
 
-Expected health response includes `"edge": true` and a low `ms` value.
-
 ---
 
-## Performance Notes (current entry.py)
+## Architecture (final)
 
-- Health endpoints (`/`, `/health`, `/livez`, `/readyz`) never import FastAPI → sub-10 ms cold start
-- Stripe webhook prefers the durable Queue (non-blocking)
-- Full FastAPI stack is lazy-loaded only on first business request
-- Queue consumer stays minimal; heavy processing can be added later without blocking the edge
+```
+Stripe
+  │
+  ▼
+/stripe-webhook  ──►  STRIPE_QUEUE  ──►  queue() consumer
+                                              │
+                                              ▼
+                                         D1 (billing_events
+                                              fulfillment_jobs
+                                              download_entitlements)
 
----
-
-## Custom Domain (optional)
-
-```bash
-npx wrangler domains add payments.garcar.io --name garcar-payments
+Business routes (checkout, download, pricing)
+  │
+  ▼
+lazy FastAPI (app.main) when needed
 ```
 
-Then set `APP_BASE_URL=https://payments.garcar.io` and re-run AutoKey so the Stripe webhook points at the custom domain.
+Health endpoints never touch D1 or FastAPI → true edge performance.
 
 ---
 
-## Fallback
+## Dual-backend note
 
-Railway remains possible via `RAILWAY_DEPLOY.md` if you later want a long-running container, but it is no longer required for launch.
+- **Edge (Workers)** → `app/d1.py`
+- **Local / container** → `app/db.py` (SQLAlchemy)
+
+Both share the same logical schema. The Worker path is authoritative for production traffic.
