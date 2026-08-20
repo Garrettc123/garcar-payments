@@ -1,16 +1,10 @@
 # Garcar Payments — Cloudflare Workers (Primary Production)
-# Hardened edge stack: FastAPI (lazy) + D1 + Queues + AutoKey secrets
+# Hardened edge stack: FastAPI (lazy) + Queues + optional D1 + AutoKey secrets
 
 name = "garcar-payments"
 main = "app/entry.py"
 compatibility_date = "2026-08-16"
 compatibility_flags = ["python_workers"]
-
-# ---------- D1 (edge SQLite) ----------
-[[d1_databases]]
-binding = "DB"
-database_name = "garcar-payments-db"
-database_id = "00000000-0000-0000-0000-000000000000"  # replaced on first `wrangler d1 create`
 
 # ---------- Queues (Stripe durable processing) ----------
 [[queues.producers]]
@@ -23,6 +17,17 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "stripe-events-dlq"
+
+# ---------- D1 (edge SQLite) — OPTIONAL until you create it ----------
+# 1. Run:  npx wrangler d1 create garcar-payments-db
+# 2. Paste the real database_id below and uncomment the block
+# 3. Run:  npx wrangler d1 execute garcar-payments-db --file=migrations/0001_d1_init.sql
+# 4. Redeploy
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "garcar-payments-db"
+# database_id = "PASTE_REAL_ID_HERE"
 
 # ---------- Observability ----------
 [observability]
