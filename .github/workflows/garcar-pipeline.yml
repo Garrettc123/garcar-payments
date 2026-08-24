@@ -12,6 +12,9 @@ on:
         type: choice
         options: [production, staging, preview]
 
+permissions:
+  contents: read
+
 jobs:
   pipeline:
     uses: Garrettc123/garcar-control-plane/.github/workflows/garcar-deploy.yml@main
