@@ -41,6 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger("garcar.payments")
 
 DISPATCH_URL = os.getenv("DISPATCH_URL", "")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 
 
 async def _emit_dispatch(event_type: str, payload: dict) -> None:
@@ -64,31 +65,31 @@ def _build_offer_catalog() -> dict[str, dict[str, Optional[str]]]:
     return {
         "audit": {
             "name": "Operational Audit",
-            "price_id": s.stripe_price_audit or "price_1TGmo7FKGbk21LK5szrPJkRl",
+            "price_id": os.getenv("STRIPE_PRICE_AUDIT") or s.stripe_price_audit or "price_1TGmo7FKGbk21LK5szrPJkRl",
             "mode": "payment",
             "description": "$197 lead-leak / missed-call operational audit",
         },
         "dealdesk": {
             "name": "AI Deal Desk Setup",
-            "price_id": s.stripe_price_dealdesk or "price_1T6lv3FKGbk21LK5J6HCIw2E",
+            "price_id": os.getenv("STRIPE_PRICE_DEALDESK") or s.stripe_price_dealdesk or "price_1T6lv3FKGbk21LK5J6HCIw2E",
             "mode": "payment",
             "description": "$497 AI call-handling + CRM setup package",
         },
         "starter": {
             "name": "Starter Automation Subscription",
-            "price_id": s.stripe_price_starter or "price_1TlkwBFKGbk21LK5ZrbIlV6t",
+            "price_id": os.getenv("STRIPE_PRICE_STARTER") or s.stripe_price_starter or "price_1TlkwBFKGbk21LK5ZrbIlV6t",
             "mode": "subscription",
             "description": "Starter recurring automation plan",
         },
         "pro": {
             "name": "Pro Automation Subscription",
-            "price_id": s.stripe_price_pro or "price_1TlkwBFKGbk21LK5egwCuCru",
+            "price_id": os.getenv("STRIPE_PRICE_PRO") or s.stripe_price_pro or "price_1TlkwBFKGbk21LK5egwCuCru",
             "mode": "subscription",
             "description": "Professional recurring automation plan",
         },
         "agency": {
             "name": "Agency Automation Subscription",
-            "price_id": s.stripe_price_agency or "price_1TIeAJFKGbk21LK5emYRdFRm",
+            "price_id": os.getenv("STRIPE_PRICE_AGENCY") or s.stripe_price_agency or "price_1TIeAJFKGbk21LK5emYRdFRm",
             "mode": "subscription",
             "description": "Agency / managed automation recurring plan",
         },
@@ -97,6 +98,7 @@ def _build_offer_catalog() -> dict[str, dict[str, Optional[str]]]:
 
 # Populated at startup
 OFFER_CATALOG: dict[str, dict[str, Optional[str]]] = {}
+ACTIVE_SUBSCRIPTIONS: dict[str, dict[str, Any]] = {}
 
 
 class CheckoutRequest(BaseModel):
@@ -143,10 +145,13 @@ app.add_middleware(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _configured_offers() -> list[dict[str, Any]]:
+    OFFER_CATALOG.clear()
+    OFFER_CATALOG.update(_build_offer_catalog())
     return [
         {
             "key": key,
             "name": offer["name"],
+            "price_id": offer.get("price_id"),
             "mode": offer["mode"],
             "description": offer["description"],
             "configured": bool(offer.get("price_id")),
@@ -158,6 +163,45 @@ def _configured_offers() -> list[dict[str, Any]]:
 def _default_url(path: str) -> str:
     base_url = get_settings().app_base_url.rstrip("/")
     return f"{base_url}{path}"
+
+
+async def notify_slack(message: str) -> None:
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            await c.post(SLACK_WEBHOOK_URL, json={"text": message})
+    except Exception as exc:
+        logger.warning('"notify_slack_failed | reason=%s"', type(exc).__name__)
+
+
+def _track_subscription_created(obj: dict[str, Any]) -> None:
+    sub_id = obj.get("id") or obj.get("subscription")
+    if not sub_id:
+        return
+
+    plan = (obj.get("metadata") or {}).get("plan", "")
+    items = ((obj.get("items") or {}).get("data") or [])
+    price = (items[0].get("price") if items else {}) or {}
+    unit_amount = price.get("unit_amount") or 0
+    mrr = round(float(unit_amount) / 100, 2)
+
+    ACTIVE_SUBSCRIPTIONS[sub_id] = {
+        "id": sub_id,
+        "customer": obj.get("customer"),
+        "plan": plan,
+        "mrr": mrr,
+        "status": obj.get("status", "active"),
+        "current_period_end": obj.get("current_period_end"),
+    }
+
+
+def _track_subscription_deleted(obj: dict[str, Any]) -> Optional[str]:
+    sub_id = obj.get("id") or obj.get("subscription")
+    if not sub_id:
+        return None
+    ACTIVE_SUBSCRIPTIONS.pop(sub_id, None)
+    return sub_id
 
 
 def _append_gc_ledger(event: dict, obj: dict) -> None:
@@ -374,6 +418,17 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
     # Enqueue fulfillment job for paid checkout sessions
     if event_type == "checkout.session.completed":
         _enqueue_fulfillment(event, obj)
+    elif event_type == "customer.subscription.created":
+        _track_subscription_created(obj)
+    elif event_type == "customer.subscription.deleted":
+        sub_id = _track_subscription_deleted(obj)
+        await notify_slack(f"CHURN: subscription={sub_id or 'unknown'} customer={obj.get('customer', 'unknown')}")
+    elif event_type == "invoice.payment_failed":
+        amount_due = float(obj.get("amount_due") or 0) / 100
+        await notify_slack(
+            f"PAYMENT FAILED: invoice={obj.get('id', 'unknown')} customer={obj.get('customer', 'unknown')} "
+            f"email={obj.get('customer_email', 'unknown')} amount_usd={amount_due:.2f}"
+        )
 
     _append_gc_ledger(event, obj)
 
@@ -486,8 +541,14 @@ def download(
 def mrr():
     s = get_settings()
     if not s.supabase_url or not s.supabase_service_key:
-        fallback = 0.0
-        return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "env_fallback"}
+        subscriptions = list(ACTIVE_SUBSCRIPTIONS.values())
+        mrr_total = round(sum(float(sub.get("mrr") or 0.0) for sub in subscriptions), 2)
+        return {
+            "mrr_usd": mrr_total,
+            "active_subscriptions": len(subscriptions),
+            "subscriptions": subscriptions,
+            "source": "in_memory",
+        }
 
     try:
         req = urllib.request.Request(
@@ -501,7 +562,7 @@ def mrr():
         with urllib.request.urlopen(req, timeout=10) as resp:
             rows = json.loads(resp.read())
     except Exception:
-        return {"mrr_usd": 0.0, "active_subscriptions": 0, "source": "fallback_on_error"}
+        return {"mrr_usd": 0.0, "active_subscriptions": 0, "subscriptions": [], "source": "fallback_on_error"}
 
     now = datetime.now(timezone.utc)
     mrr_cents = 0
@@ -525,6 +586,7 @@ def mrr():
     return {
         "mrr_usd": round(mrr_cents / 100, 2),
         "active_subscriptions": len(active_emails),
+        "subscriptions": [],
         "lifetime_revenue_usd": round(lifetime_cents / 100, 2),
         "source": "gc_ledger",
     }
