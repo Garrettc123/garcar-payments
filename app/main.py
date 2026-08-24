@@ -15,14 +15,16 @@ from __future__ import annotations
 import json
 import logging
 import logging.config
+import os
 import time
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import httpx
 import stripe
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -37,6 +39,21 @@ logging.basicConfig(
     format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
 )
 logger = logging.getLogger("garcar.payments")
+
+DISPATCH_URL = os.getenv("DISPATCH_URL", "")
+
+
+async def _emit_dispatch(event_type: str, payload: dict) -> None:
+    if not DISPATCH_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            await c.post(
+                f"{DISPATCH_URL}/dispatch",
+                json={"event_type": event_type, "source_system": "garcar-payments", "payload": payload},
+            )
+    except Exception:
+        pass
 
 
 # ── Product allow-list ────────────────────────────────────────────────────────
@@ -310,7 +327,7 @@ async def create_checkout_session(
 # ── Stripe webhook ────────────────────────────────────────────────────────────
 
 @app.post("/stripe-webhook")
-async def stripe_webhook(request: Request):
+async def stripe_webhook(request: Request, background: BackgroundTasks):
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
     # Read the webhook secret fresh each call so test env-var overrides work.
@@ -359,6 +376,17 @@ async def stripe_webhook(request: Request):
         _enqueue_fulfillment(event, obj)
 
     _append_gc_ledger(event, obj)
+
+    background.add_task(
+        _emit_dispatch,
+        f"stripe.{event_type.replace('.', '_')}",
+        {
+            "event_id": event_id,
+            "event_type": event_type,
+            "customer_id": obj.get("customer"),
+            "subscription_id": obj.get("subscription"),
+        },
+    )
 
     logger.info('"webhook_received | event_type=%s | event_id=%s"', event_type, event_id)
     return {"received": True, "event_type": event_type}

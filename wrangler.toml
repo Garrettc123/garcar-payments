@@ -1,8 +1,8 @@
-# Garcar Payments — Cloudflare Workers
-# Full stack: FastAPI + Queues + Cron + Secrets via AutoKey
+# Garcar Payments — Cloudflare Workers (Primary Production)
+# Hardened edge stack: FastAPI (lazy) + Queues + optional D1 + AutoKey secrets
 
 name = "garcar-payments"
-main = "app/entry.py"                    # thin ASGI entrypoint (see scripts)
+main = "app/entry.py"
 compatibility_date = "2026-08-16"
 compatibility_flags = ["python_workers"]
 
@@ -18,15 +18,21 @@ max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "stripe-events-dlq"
 
-# ---------- Optional Cron Triggers (agents / reporting) ----------
-# [[triggers.crons]]
-# crons = ["0 8 * * *"]                 # daily revenue report 08:00 UTC
+# ---------- D1 (edge SQLite) — OPTIONAL until you create it ----------
+# 1. Run:  npx wrangler d1 create garcar-payments-db
+# 2. Paste the real database_id below and uncomment the block
+# 3. Run:  npx wrangler d1 execute garcar-payments-db --file=migrations/0001_d1_init.sql
+# 4. Redeploy
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "garcar-payments-db"
+# database_id = "PASTE_REAL_ID_HERE"
 
-# ---------- Observability (Grafana-ready) ----------
+# ---------- Observability ----------
 [observability]
 enabled = true
 head_sampling_rate = 1
 
-# Secrets are NEVER stored here.
-# They are pushed by AutoKey (scripts/autokey_bootstrap_cf.py)
-# or via: npx wrangler secret put <NAME>
+# Secrets are pushed by AutoKey or `wrangler secret put`
+# Never commit real secrets here.
