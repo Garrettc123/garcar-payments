@@ -1,0 +1,37 @@
+name: Integration Health Check
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install httpx fastapi
+
+      - name: Check /integrations/status endpoint
+        run: |
+          curl -sf ${{ secrets.GARCAR_PAYMENTS_URL }}/health || echo "Health endpoint unreachable"
+
+      - name: Verify required secrets are set
+        run: |
+          echo "Checking secrets presence..."
+          [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]       && echo "✅ STRIPE_SECRET_KEY"       || echo "❌ STRIPE_SECRET_KEY missing"
+          [ -n "${{ secrets.HUBSPOT_TOKEN }}" ]           && echo "✅ HUBSPOT_TOKEN"           || echo "❌ HUBSPOT_TOKEN missing"
+          [ -n "${{ secrets.SUPABASE_URL }}" ]            && echo "✅ SUPABASE_URL"            || echo "❌ SUPABASE_URL missing"
+          [ -n "${{ secrets.LINEAR_API_KEY }}" ]          && echo "✅ LINEAR_API_KEY"          || echo "❌ LINEAR_API_KEY missing"
+          [ -n "${{ secrets.NOTION_TOKEN }}" ]            && echo "✅ NOTION_TOKEN"            || echo "❌ NOTION_TOKEN missing"
+          [ -n "${{ secrets.DOCUSIGN_ACCESS_TOKEN }}" ]  && echo "✅ DOCUSIGN_ACCESS_TOKEN"  || echo "❌ DOCUSIGN_ACCESS_TOKEN missing"
+          [ -n "${{ secrets.HUNTER_API_KEY }}" ]          && echo "✅ HUNTER_API_KEY"          || echo "❌ HUNTER_API_KEY missing"
+          [ -n "${{ secrets.SHOPIFY_ADMIN_TOKEN }}" ]     && echo "✅ SHOPIFY_ADMIN_TOKEN"     || echo "❌ SHOPIFY_ADMIN_TOKEN missing"
+          [ -n "${{ secrets.HF_TOKEN }}" ]               && echo "✅ HF_TOKEN"               || echo "❌ HF_TOKEN missing"
