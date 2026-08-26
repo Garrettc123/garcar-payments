@@ -68,6 +68,20 @@ class IntegrationAction(Base):
     __table_args__ = (UniqueConstraint("job_id", "stage", name="uq_integration_action_job_stage"),)
 
 
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    subscription_id = Column(String(255), unique=True, index=True, nullable=False)
+    customer_id = Column(String(255), index=True, nullable=True)
+    plan = Column(String(100), nullable=True)
+    unit_amount = Column(Integer, nullable=True)
+    currency = Column(String(10), nullable=True, default="usd")
+    status = Column(String(32), nullable=False, default="active")
+    current_period_end = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DownloadEntitlement(Base):
     __tablename__ = "download_entitlements"
     id = Column(Integer, primary_key=True, index=True)
