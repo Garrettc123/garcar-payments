@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
@@ -21,28 +21,16 @@ class BillingEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# Job status constants
 JOB_STATUS_PENDING = "pending"
 JOB_STATUS_PROCESSING = "processing"
 JOB_STATUS_DONE = "done"
 JOB_STATUS_FAILED = "failed"
-JOB_STATUS_DEAD = "dead"  # exhausted retries
+JOB_STATUS_DEAD = "dead"
 
 
 class FulfillmentJob(Base):
-    """
-    Durable fulfillment job table.
-
-    Each checkout.session.completed event creates exactly one row (idempotent
-    on stripe_event_id).  The worker retries up to MAX_ATTEMPTS times with
-    exponential back-off; exhausted jobs are moved to status='dead' for
-    manual inspection.
-    """
-
     __tablename__ = "fulfillment_jobs"
-
     MAX_ATTEMPTS = 5
-
     id = Column(Integer, primary_key=True, index=True)
     stripe_event_id = Column(String(255), unique=True, index=True, nullable=False)
     checkout_session_id = Column(String(255), index=True, nullable=True)
@@ -51,22 +39,15 @@ class FulfillmentJob(Base):
     status = Column(String(32), index=True, nullable=False, default=JOB_STATUS_PENDING)
     attempts = Column(Integer, nullable=False, default=0)
     last_error = Column(Text, nullable=True)
-    # Audit trail
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
-    # Set to True once email has been sent so re-runs don't re-send
     email_sent = Column(Boolean, nullable=False, default=False)
 
 
 class DownloadEntitlement(Base):
-    """
-    Records that a customer is entitled to download a specific product.
-    Used by the signed-download endpoint to verify access before issuing a link.
-    """
-
     __tablename__ = "download_entitlements"
-
+    __table_args__ = (UniqueConstraint("stripe_event_id", "customer_email", "plan", name="uq_entitlement_event_email_plan"),)
     id = Column(Integer, primary_key=True, index=True)
     stripe_event_id = Column(String(255), index=True, nullable=False)
     customer_email = Column(String(320), index=True, nullable=False)
