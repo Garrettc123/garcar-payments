@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import sys
 from functools import lru_cache
-
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
-
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_audit: str = ""
@@ -23,13 +21,11 @@ class Settings(BaseSettings):
     cors_allow_origins: str = "*"
     environment: str = "development"
     port: int = 8000
-
     supabase_url: str = ""
     supabase_service_key: str = ""
     resend_api_key: str = ""
     email_from: str = "noreply@garcar.com"
     download_signing_secret: str = ""
-
     linear_api_key: str = ""
     linear_team_id: str = ""
     notion_token: str = ""
@@ -63,6 +59,8 @@ class Settings(BaseSettings):
             ("NOTION_REVENUE_DB_ID", self.notion_revenue_db_id),
             ("LINEAR_API_KEY", self.linear_api_key),
             ("LINEAR_TEAM_ID", self.linear_team_id),
+            ("RESEND_API_KEY", self.resend_api_key),
+            ("EMAIL_FROM", self.email_from),
         ]
         missing = [name for name, value in required if not value]
         for name, value in {
