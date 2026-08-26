@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Garcar AutoKey — Cloudflare edition."""
 from __future__ import annotations
-
 import json
 import os
 import secrets
@@ -53,9 +52,8 @@ def ensure_queues() -> None:
     result = run(["npx", "wrangler", "queues", "list"], check=False)
     existing = (result.stdout or "") + (result.stderr or "")
     for queue in ("stripe-events", "stripe-events-dlq"):
-        if queue in existing:
-            continue
-        run(["npx", "wrangler", "queues", "create", queue], check=False)
+        if queue not in existing:
+            run(["npx", "wrangler", "queues", "create", queue], check=False)
 
 
 def wrangler_secret(name: str, value: str) -> None:
@@ -63,14 +61,20 @@ def wrangler_secret(name: str, value: str) -> None:
         return
     result = run(["npx", "wrangler", "secret", "put", name, "--name", "garcar-payments"], check=False, input_text=value)
     if result.returncode != 0:
-        print(f"WARN: could not update Cloudflare secret {name}")
+        sys.exit(f"Could not provision required Cloudflare secret: {name}")
 
 
 def main() -> None:
-    required = ["STRIPE_SECRET_KEY", "CLOUDFLARE_API_TOKEN"]
+    required = [
+        "STRIPE_SECRET_KEY", "CLOUDFLARE_API_TOKEN", "APP_BASE_URL", "DATABASE_URL",
+        "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "HUBSPOT_ACCESS_TOKEN",
+        "ASANA_ACCESS_TOKEN", "ASANA_WORKSPACE_GID", "NOTION_TOKEN",
+        "NOTION_REVENUE_DB_ID", "LINEAR_API_KEY", "LINEAR_TEAM_ID",
+        "RESEND_API_KEY", "EMAIL_FROM",
+    ]
     missing = [key for key in required if not os.environ.get(key)]
     if missing:
-        sys.exit(f"Missing required env: {', '.join(missing)}")
+        sys.exit(f"Missing required production env: {', '.join(missing)}")
 
     ensure_queues()
     prices = {
@@ -81,7 +85,7 @@ def main() -> None:
         "STRIPE_PRICE_AGENCY": ensure_product("Agency Automation", 499700, "subscription"),
     }
 
-    app_url = (os.environ.get("APP_BASE_URL") or "https://garcar-payments.workers.dev").rstrip("/")
+    app_url = os.environ["APP_BASE_URL"].rstrip("/")
     webhook_url = f"{app_url}/stripe-webhook"
     endpoints = stripe("webhook_endpoints")
     for endpoint in endpoints.get("data", []):
@@ -108,17 +112,11 @@ def main() -> None:
         "ENVIRONMENT": os.environ.get("ENVIRONMENT", "production"),
         **prices,
     }
-    for key in [
-        "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "DATABASE_URL",
-        "LINEAR_API_KEY", "LINEAR_TEAM_ID", "NOTION_TOKEN", "NOTION_REVENUE_DB_ID",
-        "CORS_ALLOW_ORIGINS", "HUBSPOT_ACCESS_TOKEN", "ASANA_ACCESS_TOKEN",
-        "ASANA_WORKSPACE_GID", "RESEND_API_KEY", "EMAIL_FROM",
-    ]:
-        if os.environ.get(key):
+    for key in required:
+        if key not in {"CLOUDFLARE_API_TOKEN", "STRIPE_SECRET_KEY", "APP_BASE_URL"}:
             secrets_map[key] = os.environ[key]
     for name, value in secrets_map.items():
         wrangler_secret(name, value)
-
     print(f"AutoKey complete: {app_url} / {webhook_url}")
 
 
