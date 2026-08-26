@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.db import DownloadEntitlement, FulfillmentJob, IntegrationAction, JOB_STATUS_DEAD, JOB_STATUS_DONE, JOB_STATUS_FAILED, JOB_STATUS_PENDING, JOB_STATUS_PROCESSING, SessionLocal
 from app.download import build_signed_download_url
 from app.email_adapter import get_email_adapter
-from app.integrations import asana_create_onboarding, hubspot_find_contact, hubspot_link_contact, linear_create_incident, notion_log_event, supabase_upsert_entitlement
+from app.integrations import HubSpotContact, asana_create_onboarding, hubspot_find_contact, hubspot_link_contact, linear_create_incident, notion_log_event, supabase_upsert_entitlement
 
 logger = logging.getLogger("garcar.e2e_worker")
 _OFFER_CATALOG: Optional[dict] = None
@@ -55,12 +55,26 @@ def _action(db: Session, job_id: int, stage: str) -> IntegrationAction:
 def _stage(db: Session, job: FulfillmentJob, name: str, fn):
     action = _action(db, job.id, name)
     if action.status == "completed":
+        # Every completed stage must be resumable without issuing another
+        # external write. HubSpot returns a typed contact; other stages persist
+        # a stable provider identifier in external_id.
+        if name == "hubspot_match" and action.external_id:
+            return HubSpotContact(action.external_id, job.customer_email)
         return action.external_id
     try:
         result = fn()
+        external_id = None
+        if isinstance(result, str):
+            external_id = result
+        elif isinstance(result, HubSpotContact):
+            external_id = result.id
+        elif isinstance(result, dict):
+            external_id = result.get("id") or result.get("project_id") or result.get("task_id")
+        elif isinstance(result, list) and result and isinstance(result[0], dict):
+            external_id = result[0].get("id")
         action.status = "completed"
         action.attempts += 1
-        action.external_id = result if isinstance(result, str) else action.external_id
+        action.external_id = str(external_id) if external_id else action.external_id
         action.last_error = None
         action.updated_at = datetime.utcnow()
         db.commit()
@@ -93,7 +107,9 @@ def process_job(db: Session, job: FulfillmentJob) -> None:
 
         stage = "hubspot_match"
         contact = _stage(db, job, stage, lambda: hubspot_find_contact(customer_id, email))
-        if contact is None:
+        if isinstance(contact, str) and job.hubspot_contact_id:
+            contact = HubSpotContact(job.hubspot_contact_id, email)
+        if not isinstance(contact, HubSpotContact):
             raise ValueError(f"No HubSpot contact found for Stripe customer {customer_id} or {email}")
         job.hubspot_contact_id = contact.id
         db.commit()
@@ -103,6 +119,8 @@ def process_job(db: Session, job: FulfillmentJob) -> None:
         entitlement = _stage(db, job, stage, lambda: supabase_upsert_entitlement(stripe_event_id=job.stripe_event_id, checkout_session_id=job.checkout_session_id or "", stripe_customer_id=customer_id, hubspot_contact_id=contact.id, plan=job.plan or "", email=email))
         if isinstance(entitlement, list) and entitlement:
             job.supabase_entitlement_id = str(entitlement[0].get("id", ""))
+        elif isinstance(entitlement, str) and not job.supabase_entitlement_id:
+            job.supabase_entitlement_id = entitlement
         db.commit()
 
         stage = "asana_onboarding"
@@ -110,12 +128,16 @@ def process_job(db: Session, job: FulfillmentJob) -> None:
         if isinstance(asana, dict):
             job.asana_project_id = str(asana.get("project_id", ""))
             job.asana_task_id = str(asana.get("task_id", ""))
+        elif isinstance(asana, str) and not job.asana_project_id:
+            job.asana_project_id = asana
         db.commit()
 
         stage = "notion_audit"
         notion = _stage(db, job, stage, lambda: notion_log_event(event_id=job.stripe_event_id, checkout_session_id=job.checkout_session_id or "", stripe_customer_id=customer_id, hubspot_contact_id=contact.id, plan=job.plan or ""))
         if isinstance(notion, dict):
             job.notion_event_id = str(notion.get("id", ""))
+        elif isinstance(notion, str) and not job.notion_event_id:
+            job.notion_event_id = notion
         db.commit()
 
         stage = "download_entitlement"
@@ -167,9 +189,8 @@ def run_once(max_jobs: int = 25) -> int:
     try:
         jobs = db.query(FulfillmentJob).filter(FulfillmentJob.status.in_([JOB_STATUS_PENDING, JOB_STATUS_FAILED])).order_by(FulfillmentJob.created_at).limit(max_jobs).all()
         for job in jobs:
-            if job.attempts and job.updated_at:
-                if (datetime.utcnow() - job.updated_at).total_seconds() < _backoff(job.attempts):
-                    continue
+            if job.attempts and job.updated_at and (datetime.utcnow() - job.updated_at).total_seconds() < _backoff(job.attempts):
+                continue
             if not _claim(db, job):
                 continue
             db.refresh(job)
