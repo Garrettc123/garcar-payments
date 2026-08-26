@@ -1,72 +1,54 @@
 # garcar-payments
 
-FastAPI service for Garcar Enterprise payments with Stripe Checkout, verified webhooks, durable fulfillment, Supabase entitlements, CRM onboarding, audit logging, and incident creation.
+Garcar Enterprise payment control plane: Stripe Checkout, signed webhooks, durable fulfillment, Supabase entitlements, CRM/onboarding integrations, audit logging, signed downloads, and retry/dead-letter handling.
 
-## End-to-end checkout flow
+## Checkout orchestration
 
 ```text
-Stripe checkout.session.completed
-  -> durable BillingEvent + FulfillmentJob
+Stripe Checkout
+  -> verified Stripe webhook
+  -> durable queue
+  -> idempotent BillingEvent + FulfillmentJob
   -> Stripe payment/customer verification
-  -> HubSpot contact match + Stripe customer link
-  -> Supabase garcar_entitlements upsert
-  -> Asana onboarding project + task
+  -> HubSpot contact match/link
+  -> Supabase entitlement upsert
+  -> Asana onboarding
   -> Notion audit event
-  -> existing download entitlement + email
+  -> download entitlement + email
   -> COMPLETED
 
-Any failed stage
-  -> durable stage failure
-  -> retry with exponential backoff
-  -> Linear incident
-  -> dead-letter after MAX_ATTEMPTS
+Failure -> durable stage state -> exponential retry -> Linear incident -> DEAD after max attempts
 ```
 
-Every checkout is correlated by the immutable Stripe event ID. Fulfillment jobs and integration stages are idempotent at the database layer so Stripe retries do not create duplicate logical entitlements.
+The immutable Stripe event ID and Checkout Session ID are the correlation keys. Per-stage state, unique constraints, provider operation keys, and reconciliation prevent duplicate logical side effects.
 
-## Production integration secrets
+## Production requirements
 
-Required for the full orchestration path:
+Required: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, all five `STRIPE_PRICE_*` values, `APP_BASE_URL`, `DATABASE_URL`, `DOWNLOAD_SIGNING_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `HUBSPOT_ACCESS_TOKEN`, `ASANA_ACCESS_TOKEN`, `ASANA_WORKSPACE_GID`, `NOTION_TOKEN`, `NOTION_REVENUE_DB_ID`, `LINEAR_API_KEY`, `LINEAR_TEAM_ID`, `RESEND_API_KEY`, and `EMAIL_FROM`.
 
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
-- `DATABASE_URL`
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_KEY`
-- `HUBSPOT_ACCESS_TOKEN`
-- `ASANA_ACCESS_TOKEN`
-- `ASANA_WORKSPACE_GID`
-- `NOTION_TOKEN`
-- `NOTION_REVENUE_DB_ID`
-- `LINEAR_API_KEY`
-- `LINEAR_TEAM_ID`
-
-See `.env.example` for the complete environment contract. Secrets are not committed to the repository.
+Never commit production secrets. See `.env.example`.
 
 ## Database
-
-Run the application migration before production traffic:
 
 ```sh
 alembic upgrade head
 ```
 
-Apply `supabase/migrations/20260818000000_garcar_entitlements.sql` to the Supabase project before enabling entitlement provisioning.
+Apply the Supabase entitlement migration before enabling production entitlement provisioning.
 
-## Running locally
+## Local development
 
 ```sh
 cp .env.example .env
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 python -m app.supervisor
 ```
 
-The supervisor runs FastAPI and the durable checkout worker together. The worker claims pending jobs atomically and resumes completed stages rather than restarting the whole workflow.
+The supervisor runs the FastAPI API and durable checkout worker together.
 
-## Running tests
+## Tests
 
 ```sh
-pip install -r requirements-dev.txt pydantic-settings resend itsdangerous bandit
 pytest tests/ -v
 ```
 
@@ -77,22 +59,26 @@ docker build -t garcar-payments .
 docker run -p 8000:8000 --env-file .env garcar-payments
 ```
 
+The Docker image starts `python -m app.supervisor`, not a standalone API process.
+
+## Railway
+
+`railway.json` also starts `python -m app.supervisor`, ensuring queued fulfillment is processed alongside the API.
+
 ## API
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/livez` | Liveness probe |
-| GET | `/readyz` | Readiness probe |
-| GET | `/health` | Offer catalog status |
-| GET | `/pricing` | Public pricing |
-| POST | `/create-checkout-session` | Create Stripe Checkout session |
-| POST | `/stripe-webhook` | Receive Stripe events |
-| GET | `/download` | Serve signed download link |
-| GET | `/success` | Post-payment success page |
-| GET | `/mrr` | MRR summary |
+|---|---|---|
+| GET | `/livez` | Liveness |
+| GET | `/readyz` | Readiness |
+| GET | `/health` | Service/offer status |
+| GET | `/pricing` | Pricing catalog |
+| POST | `/create-checkout-session` | Stripe Checkout |
+| POST | `/stripe-webhook` | Verified Stripe events |
+| GET | `/download` | Signed entitlement-gated delivery |
+| GET | `/mrr` | Recurring revenue summary |
+| GET | `/success` | Post-payment response |
 
 ## Cloudflare
 
-Cloudflare Workers sends Stripe webhook requests to the `stripe-events` durable queue. The queue consumer verifies the Stripe signature, persists the event/job, and executes the same end-to-end orchestration. Queue retries are backed by `stripe-events-dlq`.
-
-See `AUTOKEY.md` and `RUNBOOK.md` for deployment and operational procedures.
+The Worker verifies the Stripe signature before admitting a webhook to `stripe-events`. The queue consumer verifies again, persists the event/job, atomically claims the job, and executes the same orchestration path. Failed queue messages use the configured DLQ.
