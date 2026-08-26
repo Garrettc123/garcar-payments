@@ -30,10 +30,11 @@ JOB_STATUS_DEAD = "dead"
 
 class FulfillmentJob(Base):
     __tablename__ = "fulfillment_jobs"
+    __table_args__ = (UniqueConstraint("checkout_session_id", name="uq_fulfillment_checkout_session"),)
     MAX_ATTEMPTS = 5
     id = Column(Integer, primary_key=True, index=True)
     stripe_event_id = Column(String(255), unique=True, index=True, nullable=False)
-    checkout_session_id = Column(String(255), index=True, nullable=True)
+    checkout_session_id = Column(String(255), index=True, nullable=False)
     stripe_customer_id = Column(String(255), index=True, nullable=True)
     plan = Column(String(100), nullable=True)
     customer_email = Column(String(320), nullable=True)
@@ -54,7 +55,6 @@ class FulfillmentJob(Base):
 
 
 class IntegrationAction(Base):
-    """Durable per-stage state. Unique on job + stage prevents duplicate side effects."""
     __tablename__ = "integration_actions"
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, index=True, nullable=False)
