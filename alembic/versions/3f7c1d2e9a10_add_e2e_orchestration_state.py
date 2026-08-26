@@ -23,6 +23,7 @@ def upgrade() -> None:
     op.add_column("fulfillment_jobs", sa.Column("notion_event_id", sa.String(255), nullable=True))
     op.add_column("fulfillment_jobs", sa.Column("linear_issue_id", sa.String(255), nullable=True))
     op.create_index("ix_fulfillment_jobs_stripe_customer_id", "fulfillment_jobs", ["stripe_customer_id"])
+    op.create_unique_constraint("uq_fulfillment_checkout_session", "fulfillment_jobs", ["checkout_session_id"])
 
     op.create_table(
         "integration_actions",
@@ -43,6 +44,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_integration_actions_job_id", table_name="integration_actions")
     op.drop_table("integration_actions")
+    op.drop_constraint("uq_fulfillment_checkout_session", "fulfillment_jobs", type_="unique")
     op.drop_index("ix_fulfillment_jobs_stripe_customer_id", table_name="fulfillment_jobs")
-    for column in ["linear_issue_id", "notion_event_id", "asana_task_id", "asana_project_id", "supabase_entitlement_id", "hubspot_contact_id", "failed_stage", "stripe_customer_id"]:
+    for column in ["linear_issue_id", "notion_event_id", "asana_task_id", "supabase_entitlement_id", "hubspot_contact_id", "failed_stage", "stripe_customer_id"]:
         op.drop_column("fulfillment_jobs", column)
