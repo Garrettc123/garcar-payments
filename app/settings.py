@@ -50,17 +50,8 @@ class Settings(BaseSettings):
             ("STRIPE_WEBHOOK_SECRET", self.stripe_webhook_secret),
             ("DOWNLOAD_SIGNING_SECRET", self.download_signing_secret),
             ("APP_BASE_URL", self.app_base_url if self.app_base_url.startswith("https://") else ""),
-            ("HUBSPOT_ACCESS_TOKEN", self.hubspot_access_token),
-            ("ASANA_ACCESS_TOKEN", self.asana_access_token),
-            ("ASANA_WORKSPACE_GID", self.asana_workspace_gid),
             ("SUPABASE_URL", self.supabase_url),
             ("SUPABASE_SERVICE_KEY", self.supabase_service_key),
-            ("NOTION_TOKEN", self.notion_token),
-            ("NOTION_REVENUE_DB_ID", self.notion_revenue_db_id),
-            ("LINEAR_API_KEY", self.linear_api_key),
-            ("LINEAR_TEAM_ID", self.linear_team_id),
-            ("RESEND_API_KEY", self.resend_api_key),
-            ("EMAIL_FROM", self.email_from),
         ]
         missing = [name for name, value in required if not value]
         for name, value in {

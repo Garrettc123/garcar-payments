@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.db import SessionLocal, BillingEvent, FulfillmentJob, DownloadEntitlement, init_db
+from app.db import SessionLocal, BillingEvent, FulfillmentJob, DownloadEntitlement, Subscription, init_db
 from app.settings import get_settings, assert_production_ready
 from app.download import verify_download_token
 
@@ -52,6 +52,18 @@ async def _emit_dispatch(event_type: str, payload: dict) -> None:
                 f"{DISPATCH_URL}/dispatch",
                 json={"event_type": event_type, "source_system": "garcar-payments", "payload": payload},
             )
+    except Exception:
+        pass
+
+
+async def notify_slack(message: str) -> None:
+    """Send an alert to Slack via incoming webhook. No-ops when SLACK_WEBHOOK_URL is not set."""
+    slack_url = os.getenv("SLACK_WEBHOOK_URL", "")
+    if not slack_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            await c.post(slack_url, json={"text": message})
     except Exception:
         pass
 
@@ -149,9 +161,11 @@ def _configured_offers() -> list[dict[str, Any]]:
             "name": offer["name"],
             "mode": offer["mode"],
             "description": offer["description"],
+            "price_id": offer.get("price_id") or "",
             "configured": bool(offer.get("price_id")),
         }
         for key, offer in OFFER_CATALOG.items()
+        if offer.get("price_id")
     ]
 
 
