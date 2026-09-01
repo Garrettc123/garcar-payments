@@ -177,8 +177,9 @@ jobs:
         if: env.STRIPE_WEBHOOK_SECRET != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          STRIPE_WEBHOOK_SECRET: ${{ env.STRIPE_WEBHOOK_SECRET }}
         run: |
-          printf '%s' '${{ env.STRIPE_WEBHOOK_SECRET }}' | npx wrangler secret put STRIPE_WEBHOOK_SECRET --name garcar-payments
+          printf '%s' "$STRIPE_WEBHOOK_SECRET" | npx wrangler secret put STRIPE_WEBHOOK_SECRET --name garcar-payments
           echo "STRIPE_WEBHOOK_SECRET pushed to Cloudflare Worker"
 
       # ── Final status report ──────────────────────────────────────────────
