@@ -7,8 +7,8 @@ dependencies = [
     "fastapi",
     "pydantic",
     "pydantic-settings",
-    "stripe",
-    "httpx",
+    "stripe>=10.0.0",
+    "httpx>=0.27.0",
 ]
 
 [dependency-groups]
