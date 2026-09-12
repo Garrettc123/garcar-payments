@@ -3,7 +3,8 @@ from workers import WorkerEntrypoint, Response
 import json
 import re
 import time
-import stripe
+
+from app.stripe_sig import SignatureError, parse_verified_event
 
 _app = None
 _asgi = None
@@ -65,10 +66,10 @@ class Default(WorkerEntrypoint):
             if not sig:
                 return _json({"error": "invalid_webhook_signature", "reason": "missing_header"}, 400)
             try:
-                event = stripe.Webhook.construct_event(body, sig, secret)
-            except stripe.SignatureVerificationError:
+                event = parse_verified_event(body, sig, secret)
+            except SignatureError:
                 return _json({"error": "invalid_webhook_signature"}, 400)
-            except Exception:
+            except ValueError:
                 return _json({"error": "invalid_webhook_payload"}, 400)
             if not event.get("id") or not event.get("type"):
                 return _json({"error": "invalid_stripe_event"}, 400)
