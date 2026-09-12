@@ -35,24 +35,31 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install wrangler
-        run: npm install -g wrangler@latest
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Vendor Python modules via pywrangler
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv sync --group dev
+          uv run pywrangler --help
+          uv run pywrangler sync || true
 
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          set -e
-          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy.log
-          tail -80 deploy.log
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run pywrangler deploy --name garcar-payments
 
       - name: Health check
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          URL="${APP_BASE_URL:-https://garcar-payments.workers.dev}"
+          URL="${APP_BASE_URL:-https://garcar-payments.garrettc123.workers.dev}"
           for i in 1 2 3 4 5 6; do
-            CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
+            CODE=$(curl -sS -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
             echo "Attempt $i → HTTP $CODE"
             cat /tmp/hbody 2>/dev/null || true
             if [ "$CODE" = "200" ]; then
