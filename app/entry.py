@@ -114,4 +114,4 @@ class Default(WorkerEntrypoint):
     async def queue(self, batch):
         from app.edge_queue import process_queued_stripe_event
         for message in batch.messages:
-            process_queued_stripe_event(message.body)
+            await process_queued_stripe_event(message.body, self.env)
