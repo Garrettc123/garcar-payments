@@ -1,6 +1,7 @@
 """Cloudflare Python Workers entrypoint for garcar-payments."""
 from workers import WorkerEntrypoint, Response
 import json
+import re
 import time
 import stripe
 
@@ -14,9 +15,37 @@ try:
 except Exception as exc:
     print(f"[entry] FastAPI app not loaded: {type(exc).__name__}")
 
+TRACE_RE = re.compile(r"^gc_(test|stage|live)_([0-9]{8})_([0-9A-HJKMNP-TV-Z]{26})$")
+ALLOWED = {
+    "checkout.session.completed",
+    "invoice.paid",
+    "invoice.payment_succeeded",
+    "invoice.payment_failed",
+    "payment_intent.succeeded",
+    "payment_intent.payment_failed",
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+}
+
 
 def _json(data: dict, status: int = 200) -> Response:
-    return Response(json.dumps(data, separators=(",", ":")), status=status, headers={"content-type": "application/json", "cache-control": "no-store"})
+    return Response(
+        json.dumps(data, separators=(",", ":")),
+        status=status,
+        headers={"content-type": "application/json", "cache-control": "no-store"},
+    )
+
+
+def _resolve_trace(event: dict):
+    obj = ((event.get("data") or {}).get("object") or {})
+    meta = obj.get("metadata") or {}
+    raw = meta.get("trace_id") or meta.get("garcar.trace_id") or meta.get("garcar_trace_id")
+    if raw and TRACE_RE.match(str(raw)):
+        return {"trace_id": raw, "decision": "commit", "reason": "metadata.trace_id"}
+    if raw:
+        return {"trace_id": None, "decision": "abort", "reason": "malformed metadata.trace_id"}
+    return {"trace_id": None, "decision": "abort", "reason": "missing metadata.trace_id"}
 
 
 class Default(WorkerEntrypoint):
@@ -24,7 +53,7 @@ class Default(WorkerEntrypoint):
         from urllib.parse import urlparse
         path = urlparse(str(getattr(request, "url", "") or "")).path or "/"
 
-        if path in ("/health", "/livez", "/readyz", "/"):
+        if path in ("/health", "/healthz", "/livez", "/readyz", "/"):
             return _json({"status": "ok", "service": "garcar-payments", "edge": True, "fastapi": _app is not None})
 
         if path in ("/stripe-webhook", "/webhooks/stripe"):
@@ -33,6 +62,8 @@ class Default(WorkerEntrypoint):
             secret = getattr(self.env, "STRIPE_WEBHOOK_SECRET", "") or ""
             if not secret:
                 return _json({"error": "webhook_not_configured"}, 503)
+            if not sig:
+                return _json({"error": "invalid_webhook_signature", "reason": "missing_header"}, 400)
             try:
                 event = stripe.Webhook.construct_event(body, sig, secret)
             except stripe.SignatureVerificationError:
@@ -41,9 +72,36 @@ class Default(WorkerEntrypoint):
                 return _json({"error": "invalid_webhook_payload"}, 400)
             if not event.get("id") or not event.get("type"):
                 return _json({"error": "invalid_stripe_event"}, 400)
+            if event["type"] not in ALLOWED:
+                return _json({"received": True, "ignored": True, "event_type": event["type"]})
+            gate = _resolve_trace(event)
+            if gate["decision"] != "commit":
+                return _json({
+                    "received": True,
+                    "aborted": True,
+                    "cmc_decision": "abort",
+                    "reason": gate["reason"],
+                    "foreign_id": event["id"],
+                    "event_type": event["type"],
+                }, 200)
             try:
-                await self.env.STRIPE_QUEUE.send({"payload": body, "signature": sig, "received_at": time.time(), "source": "stripe"})
-                return _json({"status": "queued", "event_id": event["id"], "event_type": event["type"]})
+                await self.env.STRIPE_QUEUE.send({
+                    "payload": body,
+                    "signature": sig,
+                    "received_at": time.time(),
+                    "source": "stripe",
+                    "trace_id": gate["trace_id"],
+                    "event_id": event["id"],
+                    "event_type": event["type"],
+                })
+                return _json({
+                    "received": True,
+                    "queued": True,
+                    "trace_id": gate["trace_id"],
+                    "cmc_decision": "commit",
+                    "event_id": event["id"],
+                    "event_type": event["type"],
+                })
             except Exception as exc:
                 print(f"[webhook] queue send failed: {type(exc).__name__}")
                 return _json({"error": "queue_failed"}, 503)
