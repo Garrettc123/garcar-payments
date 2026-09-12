@@ -1,6 +1,11 @@
 """Garcar Payments — FastAPI entry point.
 Routes Stripe and Shopify webhooks through the cross-system integration layer.
+Garcar Base Contract: /health /meta /metrics /events.
 """
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any
+
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 import logging
@@ -14,16 +19,81 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SYSTEM = "garcar-payments"
+ROLE = "payments"
+VERSION = "2.0.0"
+CONTRACT_VERSION = "1.0.0"
+
 app = FastAPI(
     title="Garcar Payments API",
     description="Cross-system integration: Stripe → HubSpot → Supabase → Linear → Notion → DocuSign → Hunter → Shopify → HuggingFace",
-    version="2.0.0"
+    version=VERSION,
 )
+
+_events: deque[dict[str, Any]] = deque(maxlen=1000)
+_counters: dict[str, int] = {
+    "requests_total": 0,
+    "stripe_webhooks": 0,
+    "shopify_webhooks": 0,
+    "health_checks": 0,
+    "meta_checks": 0,
+    "metrics_checks": 0,
+    "events_checks": 0,
+}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_event(topic: str, source: str, payload: dict[str, Any] | None = None) -> None:
+    _events.append({
+        "topic": topic,
+        "source": source,
+        "payload": payload or {},
+        "timestamp": _now(),
+    })
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "garcar-payments", "version": "2.0.0"}
+    _counters["health_checks"] += 1
+    _counters["requests_total"] += 1
+    return {
+        "status": "ok",
+        "system": SYSTEM,
+        "version": VERSION,
+        "timestamp": _now(),
+        "service": SYSTEM,
+    }
+
+
+@app.get("/meta")
+async def meta():
+    _counters["meta_checks"] += 1
+    _counters["requests_total"] += 1
+    return {
+        "system": SYSTEM,
+        "role": ROLE,
+        "contract_version": CONTRACT_VERSION,
+        "endpoints": ["/health", "/meta", "/metrics", "/events"],
+        "event_bus_topic_schema": "garcar.{system}.{event_type}",
+    }
+
+
+@app.get("/metrics")
+async def metrics():
+    _counters["metrics_checks"] += 1
+    _counters["requests_total"] += 1
+    return dict(_counters)
+
+
+@app.get("/events")
+async def events():
+    _counters["events_checks"] += 1
+    _counters["requests_total"] += 1
+    ev = list(_events)
+    return {"events": ev, "total": len(ev)}
 
 
 @app.post("/webhooks/stripe")
@@ -36,6 +106,9 @@ async def stripe_webhook(
         raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
     try:
         result = handle_stripe_webhook(payload, stripe_signature)
+        _counters["stripe_webhooks"] += 1
+        _counters["requests_total"] += 1
+        _record_event("garcar.garcar-payments.stripe_webhook", "stripe", {"ok": True})
         return JSONResponse(content=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -53,6 +126,9 @@ async def shopify_webhook(
     topic = x_shopify_topic or "unknown"
     try:
         handle_shopify_webhook(payload, topic)
+        _counters["shopify_webhooks"] += 1
+        _counters["requests_total"] += 1
+        _record_event("garcar.garcar-payments.shopify_webhook", "shopify", {"topic": topic})
         return JSONResponse(content={"status": "processed", "topic": topic})
     except Exception as e:
         logger.error(f"Shopify webhook error: {e}", exc_info=True)
