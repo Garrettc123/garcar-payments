@@ -7,10 +7,12 @@ dependencies = [
     "fastapi",
     "pydantic",
     "pydantic-settings",
+    "stripe",
+    "httpx",
 ]
 
 [dependency-groups]
 dev = [
-    "workers-py",
+    "workers-py>=1.9",
     "workers-runtime-sdk",
 ]
