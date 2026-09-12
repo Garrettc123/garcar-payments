@@ -2,6 +2,8 @@
 
 Role: `payments`
 
+_Live fan-out: 2026-09-12 (wet / CASH_LOCK)_
+
 ## Required Garcar Base Contract
 - Implement `/health`, `/meta`, `/metrics`, `/events` endpoints.
 
