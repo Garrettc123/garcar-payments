@@ -39,14 +39,19 @@ def _json(data: dict, status: int = 200) -> Response:
 
 
 def _resolve_trace(event: dict):
+    """Best-effort CMC trace extraction. Never blocks fulfillment.
+
+    Payment Links and /create-checkout-session do not set metadata.trace_id.
+    Aborting those events killed the revenue loop. Signature + ALLOWED still gate.
+    """
     obj = ((event.get("data") or {}).get("object") or {})
     meta = obj.get("metadata") or {}
     raw = meta.get("trace_id") or meta.get("garcar.trace_id") or meta.get("garcar_trace_id")
     if raw and TRACE_RE.match(str(raw)):
         return {"trace_id": raw, "decision": "commit", "reason": "metadata.trace_id"}
     if raw:
-        return {"trace_id": None, "decision": "abort", "reason": "malformed metadata.trace_id"}
-    return {"trace_id": None, "decision": "abort", "reason": "missing metadata.trace_id"}
+        return {"trace_id": None, "decision": "commit", "reason": "malformed_metadata_trace_id_ignored"}
+    return {"trace_id": None, "decision": "commit", "reason": "no_trace_id_plain_stripe"}
 
 
 class Default(WorkerEntrypoint):
@@ -76,15 +81,7 @@ class Default(WorkerEntrypoint):
             if event["type"] not in ALLOWED:
                 return _json({"received": True, "ignored": True, "event_type": event["type"]})
             gate = _resolve_trace(event)
-            if gate["decision"] != "commit":
-                return _json({
-                    "received": True,
-                    "aborted": True,
-                    "cmc_decision": "abort",
-                    "reason": gate["reason"],
-                    "foreign_id": event["id"],
-                    "event_type": event["type"],
-                }, 200)
+            # Always queue ALLOWED + signature-valid events. trace_id is optional.
             try:
                 await self.env.STRIPE_QUEUE.send({
                     "payload": body,
@@ -94,12 +91,14 @@ class Default(WorkerEntrypoint):
                     "trace_id": gate["trace_id"],
                     "event_id": event["id"],
                     "event_type": event["type"],
+                    "cmc_reason": gate["reason"],
                 })
                 return _json({
                     "received": True,
                     "queued": True,
                     "trace_id": gate["trace_id"],
-                    "cmc_decision": "commit",
+                    "cmc_decision": gate["decision"],
+                    "cmc_reason": gate["reason"],
                     "event_id": event["id"],
                     "event_type": event["type"],
                 })
