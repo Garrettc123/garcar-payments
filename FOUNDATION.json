@@ -1,0 +1,13 @@
+{
+  "system": "garcar-payments",
+  "tier": "CASH",
+  "stamp": "sidecar",
+  "reason": "main.py + api/ + app/ already exist",
+  "stamped_by": "garcar-repo-foundry",
+  "skus": ["lead-leak-audit", "revenue-recovery-sprint", "ai-growth-engine"],
+  "checkout": {
+    "47": "https://buy.stripe.com/dRm8wPbb72pY2Mz8BR43S1D",
+    "497": "https://buy.stripe.com/aFa8wPdjfggO3QDcS743S1F",
+    "1497": "https://buy.stripe.com/9B63cv4MJ9Sq1Iv19p43S1E"
+  }
+}
