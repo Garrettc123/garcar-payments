@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import httpx
 import stripe
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +32,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db import SessionLocal, BillingEvent, FulfillmentJob, DownloadEntitlement, Subscription, init_db
 from app.settings import get_settings, assert_production_ready
 from app.download import verify_download_token
+from app.api_key_auth import require_admin_key
+from app.stripe_sig import SignatureError, parse_verified_event
 
 # ── Structured logging ───────────────────────────────────────────────────────
 logging.basicConfig(
@@ -347,15 +349,21 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
     # Read the webhook secret fresh each call so test env-var overrides work.
     # The cached settings object is used for all other config.
     import os as _os
-    secret = _os.getenv("STRIPE_WEBHOOK_SECRET", "") or get_settings().stripe_webhook_secret
+    secret = (_os.getenv("STRIPE_WEBHOOK_SECRET", "") or get_settings().stripe_webhook_secret or "").strip()
 
-    # Fail-closed: when webhook secret is configured, signature must pass.
+    # Hardening audit Oct 2026: fail closed. Without a signing secret we cannot tell a real
+    # Stripe event from a forged one, so refuse everything (503) instead of trusting the body.
+    if not secret:
+        logger.error('"webhook_not_configured | STRIPE_WEBHOOK_SECRET is not set"')
+        raise HTTPException(status_code=503, detail="Webhook not configured")
+    if not sig:
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
+    # Verify with the repo's stdlib verifier (same Stripe v1 scheme as the edge worker).
+    # It returns a plain dict, so the .get() calls below work on every stripe SDK version
+    # (newer SDKs return an Event object that no longer supports .get()).
     try:
-        if secret:
-            event = stripe.Webhook.construct_event(payload, sig, secret)
-        else:
-            event = json.loads(payload.decode("utf-8"))
-    except stripe.SignatureVerificationError:
+        event = parse_verified_event(payload.decode("utf-8"), sig, secret)
+    except SignatureError:
         logger.warning('"webhook_signature_invalid"')
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
     except Exception:
@@ -496,7 +504,8 @@ def download(
 
 # ── MRR endpoint ──────────────────────────────────────────────────────────────
 
-@app.get("/mrr")
+# Hardening audit Oct 2026: revenue figures need PAYMENTS_ADMIN_API_KEY (503 if unset).
+@app.get("/mrr", dependencies=[Depends(require_admin_key)])
 def mrr():
     s = get_settings()
     if not s.supabase_url or not s.supabase_service_key:

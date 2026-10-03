@@ -57,6 +57,7 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
+          PAYMENTS_ADMIN_API_KEY: ${{ secrets.PAYMENTS_ADMIN_API_KEY }}
         run: |
           python - <<'EOF'
           import requests, os, datetime, json
@@ -66,7 +67,9 @@ jobs:
           db_id        = os.environ["NOTION_REVENUE_DB_ID"]
 
           # Fetch MRR from garcar-payments
-          r = requests.get(f"{payments_url}/mrr", timeout=15)
+          # /mrr now requires the admin API key (hardening audit, Oct 2026).
+          r = requests.get(f"{payments_url}/mrr", timeout=15,
+                           headers={"X-API-Key": os.environ.get("PAYMENTS_ADMIN_API_KEY", "")})
           r.raise_for_status()
           data = r.json()
           mrr            = data.get("mrr_usd", 0)

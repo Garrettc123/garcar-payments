@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.stripe_test_utils import signed_headers
 
 # Use the lifespan context so init_db() runs before tests
 @pytest.fixture(scope="session")
@@ -137,7 +138,7 @@ def test_webhook_persists_event(client):
     response = client.post(
         "/stripe-webhook",
         content=payload,
-        headers={"content-type": "application/json"},
+        headers=signed_headers(payload),
     )
     assert response.status_code == 200
     data = response.json()
@@ -149,7 +150,7 @@ def test_webhook_deduplicates_events(client):
     """Sending the same event twice must not raise — duplicate is silently dropped."""
     event = {**_SAMPLE_EVENT, "id": "evt_dedup_test"}
     payload = json.dumps(event).encode()
-    headers = {"content-type": "application/json"}
+    headers = signed_headers(payload)
 
     r1 = client.post("/stripe-webhook", content=payload, headers=headers)
     r2 = client.post("/stripe-webhook", content=payload, headers=headers)
@@ -185,4 +186,3 @@ def test_success_page(client):
     data = response.json()
     assert data["ok"] is True
     assert data["session_id"] == "cs_test_123"
-
