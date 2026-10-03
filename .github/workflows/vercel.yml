@@ -6,8 +6,12 @@ on:
   push:
     branches: [main]
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   vercel-status:
+    permissions: {}
     name: Vercel Status Check
     runs-on: ubuntu-latest
     steps:

@@ -11,15 +11,17 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
 
 jobs:
   test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -28,7 +30,7 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
         env:
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: 'sqlite:///:memory:'
           STRIPE_SECRET_KEY: sk_test_placeholder
           STRIPE_PRICE_STARTER: price_starter_test
           STRIPE_PRICE_PRO: price_pro_test
