@@ -17,11 +17,16 @@ on:
           - production
           - staging
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   autokey:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # ── Resolve APP_BASE_URL (secret preferred, known Railway domain as fallback) ──
       - name: Resolve APP_BASE_URL
@@ -46,22 +51,24 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          REPO: ${{ github.repository }}
+          RESOLVED_URL: ${{ steps.resolve.outputs.url }}
         run: |
           MISSING=""
           [ -z "$RAILWAY_TOKEN" ]     && MISSING="$MISSING RAILWAY_TOKEN"
           [ -z "$STRIPE_SECRET_KEY" ] && MISSING="$MISSING STRIPE_SECRET_KEY"
           if [ -n "$MISSING" ]; then
             echo "Missing secrets:$MISSING"
-            echo "Add them at: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "Add them at: https://github.com/$REPO/settings/secrets/actions"
             echo "Full list: see SECRETS.md in this repository"
             exit 1
           fi
           echo "All required secrets present"
-          echo "APP_BASE_URL=${{ steps.resolve.outputs.url }}"
+          echo "APP_BASE_URL=$RESOLVED_URL"
 
       # ── Install Railway CLI ──────────────────────────────────────────────
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
 
@@ -78,41 +85,60 @@ jobs:
       - name: Sync env vars to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_PRICE_AUDIT: ${{ secrets.STRIPE_PRICE_AUDIT }}
+          STRIPE_PRICE_DEALDESK: ${{ secrets.STRIPE_PRICE_DEALDESK }}
+          STRIPE_PRICE_STARTER: ${{ secrets.STRIPE_PRICE_STARTER }}
+          STRIPE_PRICE_PRO: ${{ secrets.STRIPE_PRICE_PRO }}
+          STRIPE_PRICE_AGENCY: ${{ secrets.STRIPE_PRICE_AGENCY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_REVENUE_DB_ID: ${{ secrets.NOTION_REVENUE_DB_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CORS_ALLOW_ORIGINS: ${{ secrets.CORS_ALLOW_ORIGINS }}
+          RESOLVED_URL: ${{ steps.resolve.outputs.url }}
+          TARGET_ENV: ${{ inputs.environment }}
         run: |
           railway variables set \
-            STRIPE_SECRET_KEY='${{ secrets.STRIPE_SECRET_KEY }}' \
-            STRIPE_WEBHOOK_SECRET='${{ secrets.STRIPE_WEBHOOK_SECRET }}' \
-            STRIPE_PRICE_AUDIT='${{ secrets.STRIPE_PRICE_AUDIT }}' \
-            STRIPE_PRICE_DEALDESK='${{ secrets.STRIPE_PRICE_DEALDESK }}' \
-            STRIPE_PRICE_STARTER='${{ secrets.STRIPE_PRICE_STARTER }}' \
-            STRIPE_PRICE_PRO='${{ secrets.STRIPE_PRICE_PRO }}' \
-            STRIPE_PRICE_AGENCY='${{ secrets.STRIPE_PRICE_AGENCY }}' \
-            LINEAR_API_KEY='${{ secrets.LINEAR_API_KEY }}' \
-            LINEAR_TEAM_ID='${{ secrets.LINEAR_TEAM_ID }}' \
-            NOTION_TOKEN='${{ secrets.NOTION_TOKEN }}' \
-            NOTION_REVENUE_DB_ID='${{ secrets.NOTION_REVENUE_DB_ID }}' \
-            SUPABASE_URL='${{ secrets.SUPABASE_URL }}' \
-            SUPABASE_SERVICE_KEY='${{ secrets.SUPABASE_SERVICE_KEY }}' \
-            DATABASE_URL='${{ secrets.DATABASE_URL }}' \
-            CORS_ALLOW_ORIGINS='${{ secrets.CORS_ALLOW_ORIGINS }}' \
-            APP_BASE_URL='${{ steps.resolve.outputs.url }}' \
-            GARCAR_PAYMENTS_URL='${{ steps.resolve.outputs.url }}' \
-            ENVIRONMENT='${{ inputs.environment }}'
+            STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" \
+            STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
+            STRIPE_PRICE_AUDIT="$STRIPE_PRICE_AUDIT" \
+            STRIPE_PRICE_DEALDESK="$STRIPE_PRICE_DEALDESK" \
+            STRIPE_PRICE_STARTER="$STRIPE_PRICE_STARTER" \
+            STRIPE_PRICE_PRO="$STRIPE_PRICE_PRO" \
+            STRIPE_PRICE_AGENCY="$STRIPE_PRICE_AGENCY" \
+            LINEAR_API_KEY="$LINEAR_API_KEY" \
+            LINEAR_TEAM_ID="$LINEAR_TEAM_ID" \
+            NOTION_TOKEN="$NOTION_TOKEN" \
+            NOTION_REVENUE_DB_ID="$NOTION_REVENUE_DB_ID" \
+            SUPABASE_URL="$SUPABASE_URL" \
+            SUPABASE_SERVICE_KEY="$SUPABASE_SERVICE_KEY" \
+            DATABASE_URL="$DATABASE_URL" \
+            CORS_ALLOW_ORIGINS="$CORS_ALLOW_ORIGINS" \
+            APP_BASE_URL="$RESOLVED_URL" \
+            GARCAR_PAYMENTS_URL="$RESOLVED_URL" \
+            ENVIRONMENT="$TARGET_ENV"
           echo "Railway env vars synced from GitHub secrets"
 
       # ── Wait for Railway to boot then health check ───────────────────────
       - name: Wait and health check
+        env:
+          RESOLVED_URL: ${{ steps.resolve.outputs.url }}
         run: |
           echo "Waiting 45s for Railway to boot..."
           sleep 45
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.resolve.outputs.url }}/health")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$RESOLVED_URL/health")
           echo "Health check HTTP $STATUS"
           if [ "$STATUS" != "200" ]; then
             echo "Health check failed — check Railway logs"
             # Soft-fail so webhook registration can still run if service is partially up
             echo "Continuing despite non-200 health check"
           else
-            echo "Service healthy at ${{ steps.resolve.outputs.url }}"
+            echo "Service healthy at $RESOLVED_URL"
           fi
 
       # ── Install Stripe CLI ───────────────────────────────────────────────
@@ -145,9 +171,11 @@ jobs:
               --api-key "$STRIPE_SECRET_KEY" \
               --format json)
             WEBHOOK_SECRET=$(echo "$OUTPUT" | jq -r '.secret')
+            # Mask the signing secret so it never appears in the (public) Actions log.
+            echo "::add-mask::$WEBHOOK_SECRET"
             echo "Webhook registered"
             echo "STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> $GITHUB_ENV
-            echo "::notice::Set STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET in GitHub secrets and Railway dashboard"
+            echo "::notice::New STRIPE_WEBHOOK_SECRET created (value masked). It is written to Railway in the next step; copy it from the Stripe dashboard into GitHub secrets."
           fi
 
       # ── Write STRIPE_WEBHOOK_SECRET back to Railway ──────────────────────
@@ -156,14 +184,17 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          railway variables set STRIPE_WEBHOOK_SECRET="${{ env.STRIPE_WEBHOOK_SECRET }}"
+          railway variables set STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET"
           echo "STRIPE_WEBHOOK_SECRET pushed to Railway"
 
       # ── Final status report ──────────────────────────────────────────────
       - name: Done
+        env:
+          RESOLVED_URL: ${{ steps.resolve.outputs.url }}
+          TARGET_ENV: ${{ inputs.environment }}
         run: |
           echo "GARCAR PAYMENTS AUTOKEY COMPLETE"
-          echo "Service: ${{ steps.resolve.outputs.url }}"
-          echo "Webhook: ${{ steps.resolve.outputs.url }}/stripe-webhook"
-          echo "Environment: ${{ inputs.environment }}"
+          echo "Service: $RESOLVED_URL"
+          echo "Webhook: $RESOLVED_URL/stripe-webhook"
+          echo "Environment: $TARGET_ENV"
           echo "All secrets pulled from GitHub Actions → Railway"
