@@ -51,8 +51,18 @@ jobs:
         env:
           RAW: ${{ inputs.app_base_url }}
         run: |
+          # Reject CR/LF before GITHUB_ENV. A newline would append extra env
+          # records (BASH_ENV) that later secret-bearing steps would execute.
+          if [[ "$RAW" == *$'\r'* || "$RAW" == *$'\n'* ]]; then
+            echo "app_base_url must not contain CR or LF" >&2
+            exit 1
+          fi
           CLEAN="${RAW%/}"
-          echo "APP_BASE_URL=$CLEAN" >> $GITHUB_ENV
+          case "$CLEAN" in
+            https://*|http://*) ;;
+            *) echo "app_base_url must be an http(s) URL" >&2; exit 1 ;;
+          esac
+          echo "APP_BASE_URL=$CLEAN" >> "$GITHUB_ENV"
           echo "Normalised URL: $CLEAN"
 
       - name: Validate required secrets
