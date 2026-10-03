@@ -2,16 +2,18 @@
 Routes Stripe and Shopify webhooks through the cross-system integration layer.
 Garcar Base Contract: /health /meta /metrics /events.
 """
+import os
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 import logging
 
 from integrations.stripe_handler import handle_stripe_webhook
 from integrations.shopify_handler import handle_shopify_webhook
+from app.api_key_auth import require_admin_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,7 +90,8 @@ async def metrics():
     return dict(_counters)
 
 
-@app.get("/events")
+# Hardening audit Oct 2026: the event log needs PAYMENTS_ADMIN_API_KEY (503 if unset).
+@app.get("/events", dependencies=[Depends(require_admin_key)])
 async def events():
     _counters["events_checks"] += 1
     _counters["requests_total"] += 1
@@ -102,6 +105,11 @@ async def stripe_webhook(
     stripe_signature: str = Header(None, alias="Stripe-Signature")
 ):
     payload = await request.body()
+    # Hardening audit Oct 2026: fail closed. An empty signing secret would let anyone
+    # forge a valid-looking signature, so refuse everything until it is set.
+    if not os.getenv("STRIPE_WEBHOOK_SECRET", "").strip():
+        logger.error("Stripe webhook refused: STRIPE_WEBHOOK_SECRET is not set")
+        raise HTTPException(status_code=503, detail="Webhook not configured")
     if not stripe_signature:
         raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
     try:
