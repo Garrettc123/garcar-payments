@@ -5,14 +5,19 @@ on:
     - cron: '0 */6 * * *'   # every 6 hours
   workflow_dispatch:
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   health-check:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
@@ -20,18 +25,30 @@ jobs:
         run: pip install httpx fastapi
 
       - name: Check /integrations/status endpoint
+        env:
+          GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
         run: |
-          curl -sf ${{ secrets.GARCAR_PAYMENTS_URL }}/health || echo "Health endpoint unreachable"
+          curl -sf "$GARCAR_PAYMENTS_URL/health" || echo "Health endpoint unreachable"
 
       - name: Verify required secrets are set
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DOCUSIGN_ACCESS_TOKEN: ${{ secrets.DOCUSIGN_ACCESS_TOKEN }}
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           echo "Checking secrets presence..."
-          [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]       && echo "✅ STRIPE_SECRET_KEY"       || echo "❌ STRIPE_SECRET_KEY missing"
-          [ -n "${{ secrets.HUBSPOT_TOKEN }}" ]           && echo "✅ HUBSPOT_TOKEN"           || echo "❌ HUBSPOT_TOKEN missing"
-          [ -n "${{ secrets.SUPABASE_URL }}" ]            && echo "✅ SUPABASE_URL"            || echo "❌ SUPABASE_URL missing"
-          [ -n "${{ secrets.LINEAR_API_KEY }}" ]          && echo "✅ LINEAR_API_KEY"          || echo "❌ LINEAR_API_KEY missing"
-          [ -n "${{ secrets.NOTION_TOKEN }}" ]            && echo "✅ NOTION_TOKEN"            || echo "❌ NOTION_TOKEN missing"
-          [ -n "${{ secrets.DOCUSIGN_ACCESS_TOKEN }}" ]  && echo "✅ DOCUSIGN_ACCESS_TOKEN"  || echo "❌ DOCUSIGN_ACCESS_TOKEN missing"
-          [ -n "${{ secrets.HUNTER_API_KEY }}" ]          && echo "✅ HUNTER_API_KEY"          || echo "❌ HUNTER_API_KEY missing"
-          [ -n "${{ secrets.SHOPIFY_ADMIN_TOKEN }}" ]     && echo "✅ SHOPIFY_ADMIN_TOKEN"     || echo "❌ SHOPIFY_ADMIN_TOKEN missing"
-          [ -n "${{ secrets.HF_TOKEN }}" ]               && echo "✅ HF_TOKEN"               || echo "❌ HF_TOKEN missing"
+          [ -n "$STRIPE_SECRET_KEY" ]       && echo "✅ STRIPE_SECRET_KEY"       || echo "❌ STRIPE_SECRET_KEY missing"
+          [ -n "$HUBSPOT_TOKEN" ]           && echo "✅ HUBSPOT_TOKEN"           || echo "❌ HUBSPOT_TOKEN missing"
+          [ -n "$SUPABASE_URL" ]            && echo "✅ SUPABASE_URL"            || echo "❌ SUPABASE_URL missing"
+          [ -n "$LINEAR_API_KEY" ]          && echo "✅ LINEAR_API_KEY"          || echo "❌ LINEAR_API_KEY missing"
+          [ -n "$NOTION_TOKEN" ]            && echo "✅ NOTION_TOKEN"            || echo "❌ NOTION_TOKEN missing"
+          [ -n "$DOCUSIGN_ACCESS_TOKEN" ]  && echo "✅ DOCUSIGN_ACCESS_TOKEN"  || echo "❌ DOCUSIGN_ACCESS_TOKEN missing"
+          [ -n "$HUNTER_API_KEY" ]          && echo "✅ HUNTER_API_KEY"          || echo "❌ HUNTER_API_KEY missing"
+          [ -n "$SHOPIFY_ADMIN_TOKEN" ]     && echo "✅ SHOPIFY_ADMIN_TOKEN"     || echo "❌ SHOPIFY_ADMIN_TOKEN missing"
+          [ -n "$HF_TOKEN" ]               && echo "✅ HF_TOKEN"               || echo "❌ HF_TOKEN missing"

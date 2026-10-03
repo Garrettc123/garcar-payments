@@ -6,8 +6,12 @@ on:
     workflows: ["Deploy to Railway"]
     types: [completed]
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   register-webhook:
+    permissions: {}
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
@@ -46,11 +50,12 @@ jobs:
           ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
 
           if [ -n "$SECRET" ]; then
+            # Mask the signing secret so it never appears in the (public) Actions log.
+            echo "::add-mask::$SECRET"
             WID=$(echo "$RESPONSE" | jq -r '.id')
             echo "Webhook ID: $WID"
-            echo "Signing Secret: $SECRET"
             echo ""
-            echo "ACTION REQUIRED: Set STRIPE_WEBHOOK_SECRET=$SECRET in Railway dashboard and GitHub secrets"
+            echo "ACTION REQUIRED: copy the signing secret for webhook $WID from the Stripe dashboard and set STRIPE_WEBHOOK_SECRET in Railway and GitHub secrets (value intentionally not printed)"
           elif [ -n "$ERROR" ]; then
             echo "ERROR: $ERROR"
             exit 1

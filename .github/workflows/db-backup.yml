@@ -19,14 +19,17 @@ concurrency:
   group: db-backup
   cancel-in-progress: false
 
-permissions:
-  contents: read
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
 
 jobs:
   backup:
+    permissions:
+      contents: read
     name: Encrypted backup
     runs-on: ubuntu-latest
-    if: ${{ secrets.DATABASE_URL != '' || true }}
+    # (removed an invalid `if: secrets...` guard; secrets can't be used in job-level if, and it was `|| true` anyway.
+    #  The dump step below already skips cleanly when DATABASE_URL is not set.)
 
     steps:
       - name: Checkout
