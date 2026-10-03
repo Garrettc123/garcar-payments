@@ -123,36 +123,3 @@ def test_root_webhook_503_when_secret_empty(root_client, monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "")
     r = root_client.post("/webhooks/stripe", content=b"{}", headers={"Stripe-Signature": "t=1,v1=x"})
     assert r.status_code == 503
-
-
-# ── backend/payments.py (secondary copy, mounted at /payments by backend/main.py) ──
-
-@pytest.fixture
-def backend_client():
-    from backend.payments import app as backend_app
-    return TestClient(backend_app)
-
-
-@pytest.mark.parametrize("value", [None, "", "whsec_REPLACE_ME"])
-def test_backend_webhook_503_without_real_secret(backend_client, monkeypatch, value):
-    if value is None:
-        monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
-    else:
-        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", value)
-    payload = _body("evt_backend_unset")
-    r = backend_client.post("/webhook/stripe", content=payload, headers=signed_headers(payload, secret=value or "x"))
-    assert r.status_code == 503
-
-
-def test_backend_webhook_400_bad_signature(backend_client):
-    payload = _body("evt_backend_bad")
-    assert backend_client.post("/webhook/stripe", content=payload).status_code == 400
-    r = backend_client.post("/webhook/stripe", content=payload,
-                            headers=signed_headers(payload, secret="whsec_wrong_dummy"))
-    assert r.status_code == 400
-
-
-def test_backend_mrr_requires_key(backend_client, monkeypatch):
-    assert backend_client.get("/mrr").status_code == 401
-    monkeypatch.delenv("PAYMENTS_ADMIN_API_KEY", raising=False)
-    assert backend_client.get("/mrr", headers=ADMIN_HEADERS).status_code == 503

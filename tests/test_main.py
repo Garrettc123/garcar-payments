@@ -11,6 +11,7 @@ os.environ.setdefault("STRIPE_PRICE_AGENCY", "price_agency_test")
 
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.stripe_test_utils import ADMIN_HEADERS, signed_headers
 
 client = TestClient(app)
 
@@ -98,7 +99,7 @@ def _subscription_event_body(event_type: str, event_id: str, sub_id: str, plan: 
 
 def test_webhook_invoice_paid_stored():
     body = _webhook_body("invoice.paid", "evt_inv_paid_001")
-    resp = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+    resp = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
     assert resp.status_code == 200
     assert resp.json()["received"] is True
     assert resp.json()["event_type"] == "invoice.paid"
@@ -106,7 +107,7 @@ def test_webhook_invoice_paid_stored():
 
 def test_webhook_checkout_completed():
     body = _webhook_body("checkout.session.completed", "evt_checkout_001")
-    resp = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+    resp = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "checkout.session.completed"
 
@@ -114,7 +115,7 @@ def test_webhook_checkout_completed():
 def test_webhook_subscription_deleted():
     body = _webhook_body("customer.subscription.deleted", "evt_sub_del_001")
     with patch("app.main.notify_slack", new_callable=AsyncMock):
-        resp = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+        resp = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "customer.subscription.deleted"
 
@@ -122,9 +123,9 @@ def test_webhook_subscription_deleted():
 def test_webhook_deduplicates_on_repeated_event_id():
     body = _webhook_body("invoice.payment_failed", "evt_dup_999")
     with patch("app.main.notify_slack", new_callable=AsyncMock):
-        resp1 = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+        resp1 = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
         assert resp1.status_code == 200
-        resp2 = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+        resp2 = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
         assert resp2.status_code == 200
 
 
@@ -143,7 +144,7 @@ def test_success_endpoint_without_session_id():
 
 
 def test_mrr_endpoint_returns_expected_fields():
-    resp = client.get("/mrr")
+    resp = client.get("/mrr", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert "active_subscriptions" in data
@@ -156,10 +157,10 @@ def test_webhook_subscription_created_stores_subscription():
     body = _subscription_event_body(
         "customer.subscription.created", "evt_sub_created_001", "sub_autotest_001", unit_amount=99700
     )
-    resp = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+    resp = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
     assert resp.status_code == 200
     assert resp.json()["event_type"] == "customer.subscription.created"
-    mrr_resp = client.get("/mrr")
+    mrr_resp = client.get("/mrr", headers=ADMIN_HEADERS)
     assert mrr_resp.status_code == 200
     active_ids = {s["id"]: s for s in mrr_resp.json()["subscriptions"]}
     assert "sub_autotest_001" in active_ids
@@ -170,7 +171,7 @@ def test_webhook_subscription_deleted_marks_cancelled_and_removes_from_mrr():
     create_body = _subscription_event_body(
         "customer.subscription.created", "evt_sub_created_002", "sub_autotest_002", unit_amount=149700
     )
-    client.post("/stripe-webhook", content=create_body, headers={"Content-Type": "application/json"})
+    client.post("/stripe-webhook", content=create_body, headers=signed_headers(create_body))
 
     delete_body = json.dumps({
         "id": "evt_sub_del_002",
@@ -184,9 +185,9 @@ def test_webhook_subscription_deleted_marks_cancelled_and_removes_from_mrr():
         },
     }).encode()
     with patch("app.main.notify_slack", new_callable=AsyncMock):
-        resp = client.post("/stripe-webhook", content=delete_body, headers={"Content-Type": "application/json"})
+        resp = client.post("/stripe-webhook", content=delete_body, headers=signed_headers(delete_body))
     assert resp.status_code == 200
-    active_ids = {s["id"] for s in client.get("/mrr").json()["subscriptions"]}
+    active_ids = {s["id"] for s in client.get("/mrr", headers=ADMIN_HEADERS).json()["subscriptions"]}
     assert "sub_autotest_002" not in active_ids
 
 
@@ -203,7 +204,7 @@ def test_webhook_subscription_deleted_sends_churn_slack_alert():
         },
     }).encode()
     with patch("app.main.notify_slack", new_callable=AsyncMock) as mock_notify:
-        resp = client.post("/stripe-webhook", content=delete_body, headers={"Content-Type": "application/json"})
+        resp = client.post("/stripe-webhook", content=delete_body, headers=signed_headers(delete_body))
     assert resp.status_code == 200
     mock_notify.assert_called_once()
     assert "CHURN" in mock_notify.call_args[0][0]
@@ -224,7 +225,7 @@ def test_webhook_payment_failed_sends_slack_alert():
         },
     }).encode()
     with patch("app.main.notify_slack", new_callable=AsyncMock) as mock_notify:
-        resp = client.post("/stripe-webhook", content=body, headers={"Content-Type": "application/json"})
+        resp = client.post("/stripe-webhook", content=body, headers=signed_headers(body))
     assert resp.status_code == 200
     mock_notify.assert_called_once()
     alert_text = mock_notify.call_args[0][0]
