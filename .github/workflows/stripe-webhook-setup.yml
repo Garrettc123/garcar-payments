@@ -3,8 +3,12 @@ name: Stripe Webhook Setup
 on:
   workflow_dispatch: {}
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   setup:
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - name: Create Stripe webhook endpoint
@@ -37,20 +41,19 @@ jobs:
             -d "enabled_events[]=payment_intent.succeeded" \
             -d "enabled_events[]=payment_intent.payment_failed")
 
-          echo "Response: $RESPONSE"
-
           SECRET=$(echo "$RESPONSE" | jq -r '.secret // empty')
           ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
 
           if [ -n "$SECRET" ]; then
+            # Mask the signing secret so it never appears in the (public) Actions log.
+            echo "::add-mask::$SECRET"
             WID=$(echo "$RESPONSE" | jq -r '.id')
             echo "SUCCESS"
             echo "Webhook ID: $WID"
-            echo "Signing Secret: $SECRET"
             echo ""
             echo "=== ACTION REQUIRED ==="
-            echo "Set this in Railway and GitHub secrets:"
-            echo "  STRIPE_WEBHOOK_SECRET=$SECRET"
+            echo "Copy the signing secret for webhook $WID from the Stripe dashboard"
+            echo "and set STRIPE_WEBHOOK_SECRET in Railway and GitHub secrets (value intentionally not printed)."
           elif [ -n "$ERROR" ]; then
             echo "ERROR: $ERROR"
             exit 1
