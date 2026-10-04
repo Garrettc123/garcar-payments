@@ -12,11 +12,14 @@ on:
         type: choice
         options: [production, staging, preview]
 
-permissions:
-  contents: read
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
 
 jobs:
   pipeline:
+    # First-party reusable workflow (Garrettc123/garcar-control-plane@main) is left on @main on purpose.
+    permissions:
+      contents: read
     uses: Garrettc123/garcar-control-plane/.github/workflows/garcar-deploy.yml@main
     with:
       service_name: garcar-payments

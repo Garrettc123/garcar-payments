@@ -11,11 +11,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
 
 jobs:
   test:
+    permissions:
+      contents: read
     name: Lint, SAST & Tests
     runs-on: ubuntu-latest
 

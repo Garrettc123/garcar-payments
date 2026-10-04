@@ -3,23 +3,29 @@ on:
   push:
     branches: [main]
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
 permissions: {}
 
 jobs:
   notify:
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - name: Emit push event to garcar-dispatch
         env:
           DISPATCH_URL: ${{ secrets.DISPATCH_URL }}
           DISPATCH_SECRET: ${{ secrets.DISPATCH_SECRET }}
+          REPO: ${{ github.repository }}
+          PUSH_SHA: ${{ github.sha }}
+          PUSH_ACTOR: ${{ github.actor }}
+          PUSH_REF: ${{ github.ref }}
         run: |
           if [ -z "$DISPATCH_URL" ]; then
             echo "DISPATCH_URL not set — skipping"
             exit 0
           fi
           BODY=$(printf '{"event_type":"github.push","source_system":"github-actions","payload":{"repo":"%s","sha":"%s","actor":"%s","ref":"%s"}}' \
-            "${{ github.repository }}" "${{ github.sha }}" "${{ github.actor }}" "${{ github.ref }}")
+            "$REPO" "$PUSH_SHA" "$PUSH_ACTOR" "$PUSH_REF")
           SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "${DISPATCH_SECRET:-placeholder}" -hex | awk '{print $2}')
           curl -sf -X POST "$DISPATCH_URL/dispatch" \
             -H "Content-Type: application/json" \

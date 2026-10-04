@@ -10,8 +10,12 @@ on:
         required: false
         default: "payment_intent.succeeded"
 
+# Least privilege: the token gets nothing by default; each job asks only for what it needs.
+permissions: {}
+
 jobs:
   stripe-smoke-test:
+    permissions: {}
     runs-on: ubuntu-latest
 
     steps:
@@ -29,12 +33,13 @@ jobs:
       - name: Trigger Stripe test event
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_EVENT: ${{ github.event.inputs.event || 'payment_intent.succeeded' }}
         run: |
           if [ -z "$STRIPE_SECRET_KEY" ]; then
             echo "⚠️  STRIPE_SECRET_KEY not configured — skipping smoke test"
             exit 0
           fi
-          stripe trigger ${{ github.event.inputs.event || 'payment_intent.succeeded' }} \
+          stripe trigger "$STRIPE_EVENT" \
             --api-key "$STRIPE_SECRET_KEY"
 
       - name: Health check Railway endpoint
