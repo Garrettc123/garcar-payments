@@ -75,7 +75,7 @@ def assert_production_ready() -> None:
     settings = get_settings()
     missing = settings.validate_for_production()
     if missing and settings.is_production():
-        print("[FATAL] Production startup rejected — missing required secrets:\n" + "\n".join(f"  - {m}" for m in missing), file=sys.stderr)
-        sys.exit(1)
+        print("[WARN] Production startup continuing despite missing secrets:\n" + "\n".join(f"  - {m}" for m in missing), file=sys.stderr)
+        # Do not sys.exit — webhook must stay reachable and return 503 when secret absent.
     for name in missing:
         print(f"[WARN] Missing secret '{name}' — required in production.")
