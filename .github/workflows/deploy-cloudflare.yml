@@ -22,7 +22,7 @@ jobs:
       id-token: write  # OIDC login (kept from the old top-level permissions)
     name: Deploy to Cloudflare Workers
     runs-on: ubuntu-latest
-    environment: production
+    environment: Production
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
