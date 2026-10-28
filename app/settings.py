@@ -1,10 +1,11 @@
 """Typed runtime settings for garcar-payments."""
 from __future__ import annotations
 
-import sys
+import os
 from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.production_guard import production_mode, production_issues
 
 
 class Settings(BaseSettings):
@@ -42,28 +43,10 @@ class Settings(BaseSettings):
         return v
 
     def is_production(self) -> bool:
-        return self.environment.lower() in ("production", "prod")
+        return production_mode(self.environment, os.getenv("VERCEL_ENV", ""))
 
     def validate_for_production(self) -> list[str]:
-        required = [
-            ("STRIPE_SECRET_KEY", self.stripe_secret_key),
-            ("STRIPE_WEBHOOK_SECRET", self.stripe_webhook_secret),
-            ("DOWNLOAD_SIGNING_SECRET", self.download_signing_secret),
-            ("APP_BASE_URL", self.app_base_url if self.app_base_url.startswith("https://") else ""),
-            ("SUPABASE_URL", self.supabase_url),
-            ("SUPABASE_SERVICE_KEY", self.supabase_service_key),
-        ]
-        missing = [name for name, value in required if not value]
-        for name, value in {
-            "STRIPE_PRICE_AUDIT": self.stripe_price_audit,
-            "STRIPE_PRICE_DEALDESK": self.stripe_price_dealdesk,
-            "STRIPE_PRICE_STARTER": self.stripe_price_starter,
-            "STRIPE_PRICE_PRO": self.stripe_price_pro,
-            "STRIPE_PRICE_AGENCY": self.stripe_price_agency,
-        }.items():
-            if not value:
-                missing.append(name)
-        return missing
+        return production_issues(self.model_dump())
 
 
 @lru_cache(maxsize=1)
@@ -73,9 +56,8 @@ def get_settings() -> Settings:
 
 def assert_production_ready() -> None:
     settings = get_settings()
-    missing = settings.validate_for_production()
-    if missing and settings.is_production():
-        print("[WARN] Production startup continuing despite missing secrets:\n" + "\n".join(f"  - {m}" for m in missing), file=sys.stderr)
-        # Do not sys.exit — webhook must stay reachable and return 503 when secret absent.
-    for name in missing:
-        print(f"[WARN] Missing secret '{name}' — required in production.")
+    if not settings.is_production():
+        return
+    issues = settings.validate_for_production()
+    if issues:
+        raise RuntimeError("Production configuration invalid: " + "; ".join(issues))
