@@ -219,7 +219,7 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
             headers={
                 "Content-Type": "application/json",
                 "apikey": s.supabase_service_key,
-                "Authorization": f"******",
+                "Authorization": f"Bearer {s.supabase_service_key}",
                 "Prefer": "return=minimal",
             },
         )
@@ -375,6 +375,7 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
     obj = event.get("data", {}).get("object", {})
 
     # Idempotent event recording
+    is_new_event = True
     db = SessionLocal()
     try:
         record = BillingEvent(
@@ -389,9 +390,15 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
         db.commit()
     except IntegrityError:
         db.rollback()
+        is_new_event = False
         logger.info('"webhook_duplicate | event_id=%s"', event_id)
     finally:
         db.close()
+
+    # Subscription state + Slack alerts. Skipped for duplicate deliveries so a Stripe
+    # retry cannot re-send a churn / payment-failed alert.
+    if is_new_event:
+        await _handle_subscription_event(event_type, obj)
 
     # Enqueue fulfillment job for paid checkout sessions
     if event_type == "checkout.session.completed":
@@ -412,6 +419,95 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
 
     logger.info('"webhook_received | event_type=%s | event_id=%s"', event_type, event_id)
     return {"received": True, "event_type": event_type}
+
+
+def _subscription_unit_amount_and_plan(obj: dict) -> tuple[int, Optional[str], str]:
+    """Return (monthly-normalized amount in cents, plan, currency) from a Stripe subscription object."""
+    items = (obj.get("items") or {}).get("data") or []
+    price = (items[0].get("price") or {}) if items else {}
+    amount = int(price.get("unit_amount") or 0)
+    interval = (price.get("recurring") or {}).get("interval", "month")
+    interval_count = int((price.get("recurring") or {}).get("interval_count") or 1)
+    # Normalize to monthly so annual plans are not counted at 12x in MRR.
+    if interval == "year":
+        amount = round(amount / (12 * interval_count))
+    elif interval == "week":
+        amount = round(amount * 52 / 12 / interval_count)
+    elif interval == "day":
+        amount = round(amount * 365 / 12 / interval_count)
+    elif interval == "month" and interval_count > 1:
+        amount = round(amount / interval_count)
+    plan = (obj.get("metadata") or {}).get("plan") or price.get("id")
+    currency = (price.get("currency") or obj.get("currency") or "usd").lower()
+    return amount, plan, currency
+
+
+async def _handle_subscription_event(event_type: str, obj: dict) -> None:
+    """Track subscription lifecycle for MRR and send churn / payment-failure alerts.
+
+    Regression fix: commit f2e844f (garcar-dispatch emit) overwrote this logic with a stale
+    copy of the file, silently disabling it. Restored from 531fa9f (GAR-494).
+    """
+    sub_id = obj.get("id", "")
+
+    if event_type in ("customer.subscription.created", "customer.subscription.updated") and sub_id:
+        amount, plan, currency = _subscription_unit_amount_and_plan(obj)
+        status = obj.get("status", "active")
+        period_end = obj.get("current_period_end")
+        db = SessionLocal()
+        try:
+            row = db.query(Subscription).filter(Subscription.subscription_id == sub_id).first()
+            if row:
+                row.status = status
+                row.unit_amount = amount
+                row.currency = currency
+                if plan:
+                    row.plan = plan
+                if period_end:
+                    row.current_period_end = int(period_end)
+            else:
+                db.add(Subscription(
+                    subscription_id=sub_id,
+                    customer_id=str(obj.get("customer") or ""),
+                    plan=plan,
+                    unit_amount=amount,
+                    currency=currency,
+                    status=status,
+                    current_period_end=int(period_end) if period_end else None,
+                ))
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception('"subscription_upsert_failed | subscription_id=%s"', sub_id)
+        finally:
+            db.close()
+
+    elif event_type == "customer.subscription.deleted":
+        if sub_id:
+            db = SessionLocal()
+            try:
+                row = db.query(Subscription).filter(Subscription.subscription_id == sub_id).first()
+                if row:
+                    row.status = "cancelled"
+                    row.unit_amount = 0
+                    db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception('"subscription_cancel_failed | subscription_id=%s"', sub_id)
+            finally:
+                db.close()
+        plan = (obj.get("metadata") or {}).get("plan", "unknown")
+        await notify_slack(
+            f"\U0001f6a8 CHURN: Subscription `{sub_id}` cancelled. "
+            f"Plan: {plan} | Customer: {obj.get('customer', 'unknown')}"
+        )
+
+    elif event_type == "invoice.payment_failed":
+        amount_due = (obj.get("amount_due") or 0) / 100
+        await notify_slack(
+            f"\u26a0\ufe0f PAYMENT FAILED: Customer `{obj.get('customer_email', 'unknown')}` "
+            f"| Amount: ${amount_due:.2f} | Invoice: {obj.get('id', 'unknown')}"
+        )
 
 
 def _enqueue_fulfillment(event: dict, obj: dict) -> None:
@@ -507,30 +603,60 @@ def download(
 # Hardening audit Oct 2026: revenue figures need PAYMENTS_ADMIN_API_KEY (503 if unset).
 @app.get("/mrr", dependencies=[Depends(require_admin_key)])
 def mrr():
+    """MRR from tracked subscriptions (source of truth). If Supabase is configured, the
+    gc_ledger cash figures are added under `ledger` for reconciliation."""
+    db = SessionLocal()
+    try:
+        active = db.query(Subscription).filter(Subscription.status == "active").all()
+        subs = [
+            {
+                "id": r.subscription_id,
+                "plan": r.plan,
+                "mrr": (r.unit_amount or 0) / 100,
+                "status": r.status,
+            }
+            for r in active
+            if (r.currency or "usd").lower() == "usd"
+        ]
+    finally:
+        db.close()
+
+    result: dict[str, Any] = {
+        "mrr_usd": round(sum(x["mrr"] for x in subs), 2),
+        "active_subscriptions": len(subs),
+        "subscriptions": subs,
+        "source": "subscriptions",
+    }
+    ledger = _gc_ledger_summary()
+    if ledger is not None:
+        result["ledger"] = ledger
+    return result
+
+
+def _gc_ledger_summary() -> Optional[dict[str, Any]]:
+    """Cash-basis figures from the Supabase gc_ledger table; None when unconfigured or unreachable."""
     s = get_settings()
     if not s.supabase_url or not s.supabase_service_key:
-        fallback = 0.0
-        return {"mrr_usd": fallback, "active_subscriptions": 0, "source": "env_fallback"}
-
+        return None
     try:
         req = urllib.request.Request(
             f"{s.supabase_url.rstrip('/')}/rest/v1/gc_ledger?all_ok=eq.true&select=amount_total,currency,customer_email,created_at",
             method="GET",
             headers={
                 "apikey": s.supabase_service_key,
-                "Authorization": f"******",
+                "Authorization": f"Bearer {s.supabase_service_key}",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             rows = json.loads(resp.read())
     except Exception:
-        return {"mrr_usd": 0.0, "active_subscriptions": 0, "source": "fallback_on_error"}
+        logger.warning('"gc_ledger_unreachable"')
+        return None
 
     now = datetime.now(timezone.utc)
-    mrr_cents = 0
+    month_cents = 0
     lifetime_cents = 0
-    active_emails: set[str] = set()
-
+    emails: set[str] = set()
     for row in rows:
         amount = row.get("amount_total") or 0
         if (row.get("currency") or "usd").lower() != "usd":
@@ -539,17 +665,15 @@ def mrr():
         try:
             dt = datetime.fromisoformat((row.get("created_at") or "").replace("Z", "+00:00"))
             if dt.year == now.year and dt.month == now.month:
-                mrr_cents += amount
+                month_cents += amount
                 if row.get("customer_email"):
-                    active_emails.add(row["customer_email"])
+                    emails.add(row["customer_email"])
         except Exception:
             pass
-
     return {
-        "mrr_usd": round(mrr_cents / 100, 2),
-        "active_subscriptions": len(active_emails),
+        "this_month_usd": round(month_cents / 100, 2),
+        "paying_customers_this_month": len(emails),
         "lifetime_revenue_usd": round(lifetime_cents / 100, 2),
-        "source": "gc_ledger",
     }
 
 
