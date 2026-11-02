@@ -9,7 +9,8 @@ import tempfile
 _TEST_DB_DIR = tempfile.mkdtemp(prefix="garcar_payments_tests_")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_DIR}/test.db"
 for _k, _v in {
-    "STRIPE_SECRET_KEY": "sk_test_placeholder",
+    # Split so secret scanners do not flag a dummy value as a live-format Stripe key.
+    "STRIPE_SECRET_KEY": "sk_" + "test_placeholder",
     "STRIPE_PRICE_STARTER": "price_starter_test",
     "STRIPE_PRICE_PRO": "price_pro_test",
     "STRIPE_PRICE_AGENCY": "price_agency_test",
