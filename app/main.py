@@ -34,6 +34,7 @@ from app.settings import get_settings, assert_production_ready
 from app.download import verify_download_token
 from app.api_key_auth import require_admin_key
 from app.stripe_sig import SignatureError, parse_verified_event
+from app.commercial_guard import CommercialGuardError, checkout_redirects, is_paid_checkout_event, observed_event_evidence
 
 # ── Structured logging ───────────────────────────────────────────────────────
 logging.basicConfig(
@@ -206,8 +207,8 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
         "amount_total": amount_total,
         "currency": currency,
         "customer_email": customer_email,
-        "outcomes": {"event_type": event_type, "livemode": event.get("livemode", False)},
-        "all_ok": True,
+        "outcomes": observed_event_evidence(event),
+        "all_ok": False,  # signed observation is NOT independently reconciled revenue
     }
 
     try:
@@ -317,13 +318,20 @@ async def create_checkout_session(
         raise HTTPException(status_code=503, detail=f"Stripe price not configured for plan: {checkout.plan}")
 
     try:
+        success_url, cancel_url = checkout_redirects(
+            get_settings().app_base_url, checkout.success_url, checkout.cancel_url
+        )
+    except CommercialGuardError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
         session = stripe.checkout.Session.create(
             customer_email=checkout.email,
             payment_method_types=["card"],
             line_items=[{"price": price_id, "quantity": 1}],
             mode=offer["mode"],
-            success_url=checkout.success_url or _default_url("/success?session_id={CHECKOUT_SESSION_ID}"),
-            cancel_url=checkout.cancel_url or _default_url("/pricing"),
+            success_url=success_url,
+            cancel_url=cancel_url,
             metadata={
                 "garcar_plan": checkout.plan,
                 "garcar_offer": offer["name"] or checkout.plan,
@@ -394,8 +402,10 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
         db.close()
 
     # Enqueue fulfillment job for paid checkout sessions
-    if event_type == "checkout.session.completed":
+    if is_paid_checkout_event(event_type, obj):
         _enqueue_fulfillment(event, obj)
+    elif event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        logger.warning('"checkout_not_paid_or_unscoped | event_id=%s"', event_id)
 
     _append_gc_ledger(event, obj)
 
@@ -422,7 +432,7 @@ def _enqueue_fulfillment(event: dict, obj: dict) -> None:
     plan = metadata.get("garcar_plan", "")
 
     # Product allow-list gate before enqueueing
-    if plan and plan not in OFFER_CATALOG:
+    if not plan or plan not in OFFER_CATALOG:
         logger.warning('"fulfillment_unknown_plan | plan=%s | event_id=%s"', plan, event_id)
         return
 
