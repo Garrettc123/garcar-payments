@@ -1,8 +1,8 @@
-"""Stripe webhook handler — routes payment events to downstream systems."""
-import stripe
+"""Stripe webhook handler: payment-gated activation."""
 import logging
+import stripe
 from integrations.config import Config
-from integrations.hubspot_handler import create_deal, close_deal
+from integrations.hubspot_handler import close_deal
 from integrations.supabase_handler import provision_tenant
 from integrations.linear_handler import create_onboarding_project
 from integrations.notion_handler import create_client_workspace
@@ -11,23 +11,23 @@ from integrations.shopify_handler import fulfill_order
 
 logger = logging.getLogger(__name__)
 stripe.api_key = Config.STRIPE_SECRET_KEY
+CHECKOUT_EVENTS = {"checkout.session.completed", "checkout.session.async_payment_succeeded"}
 
 
 def handle_stripe_webhook(payload: bytes, sig_header: str) -> dict:
-    """Verify and dispatch Stripe webhook events."""
+    if not Config.STRIPE_WEBHOOK_SECRET or not Config.STRIPE_WEBHOOK_SECRET.strip():
+        raise RuntimeError("Stripe webhook signing secret is not configured")
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, Config.STRIPE_WEBHOOK_SECRET
-        )
-    except stripe.error.SignatureVerificationError as e:
-        logger.error(f"Stripe signature verification failed: {e}")
-        raise ValueError("Invalid Stripe signature")
-
+        event = stripe.Webhook.construct_event(payload, sig_header, Config.STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError as exc:
+        raise ValueError("Invalid Stripe signature") from exc
     event_type = event["type"]
     data = event["data"]["object"]
-    logger.info(f"Stripe event received: {event_type} | id={data.get('id')}")
-
-    if event_type == "checkout.session.completed":
+    if event_type in CHECKOUT_EVENTS:
+        if data.get("payment_status") != "paid":
+            return {"status": "skipped", "event": event_type, "reason": "payment_not_confirmed"}
+        if data.get("status") != "complete":
+            return {"status": "skipped", "event": event_type, "reason": "checkout_not_complete"}
         _on_checkout_complete(data)
     elif event_type == "invoice.payment_succeeded":
         _on_subscription_renewed(data)
@@ -35,85 +35,44 @@ def handle_stripe_webhook(payload: bytes, sig_header: str) -> dict:
         _on_subscription_cancelled(data)
     elif event_type == "charge.refunded":
         _on_refund(data)
-
+    else:
+        return {"status": "ignored", "event": event_type}
     return {"status": "processed", "event": event_type}
 
 
 def _on_checkout_complete(session: dict):
-    """Full post-sale activation sequence."""
-    customer_email = session.get("customer_details", {}).get("email")
-    customer_name  = session.get("customer_details", {}).get("name", "")
-    amount         = session.get("amount_total", 0) / 100
-    product_name   = session.get("metadata", {}).get("product_name", "Unknown Product")
-    customer_id    = session.get("customer")
-
-    logger.info(f"New sale: {customer_name} <{customer_email}> — ${amount} — {product_name}")
-
-    # 1. Provision Supabase tenant row
-    tenant_id = provision_tenant(
-        email=customer_email,
-        name=customer_name,
-        stripe_customer_id=customer_id,
-        product=product_name,
-        amount=amount
-    )
-
-    # 2. Close deal in HubSpot
-    close_deal(
-        email=customer_email,
-        name=customer_name,
-        amount=amount,
-        product=product_name
-    )
-
-    # 3. Create Linear onboarding project
-    linear_project_id = create_onboarding_project(
-        client_name=customer_name,
-        email=customer_email,
-        product=product_name,
-        tenant_id=tenant_id
-    )
-
-    # 4. Create Notion client workspace
-    create_client_workspace(
-        name=customer_name,
-        email=customer_email,
-        product=product_name,
-        linear_project_id=linear_project_id,
-        tenant_id=tenant_id
-    )
-
-    # 5. Send DocuSign contract
-    send_contract(
-        email=customer_email,
-        name=customer_name,
-        product=product_name,
-        amount=amount
-    )
-
-    # 6. Fulfill Shopify order if applicable
-    shopify_order_id = session.get("metadata", {}).get("shopify_order_id")
+    details = session.get("customer_details") or {}
+    if not isinstance(details, dict) or not details.get("email") or not session.get("id"):
+        raise ValueError("Paid checkout requires session id and customer email")
+    if session.get("payment_status") != "paid" or session.get("status") != "complete":
+        raise ValueError("Checkout is not complete and paid")
+    customer_email = details["email"]
+    customer_name = details.get("name") or ""
+    amount = session.get("amount_total", 0) / 100
+    product_name = (session.get("metadata") or {}).get("product_name", "Unknown Product")
+    tenant_id = provision_tenant(email=customer_email, name=customer_name,
+        stripe_customer_id=session.get("customer"), product=product_name, amount=amount)
+    close_deal(email=customer_email, name=customer_name, amount=amount, product=product_name)
+    project_id = create_onboarding_project(client_name=customer_name,
+        email=customer_email, product=product_name, tenant_id=tenant_id)
+    create_client_workspace(name=customer_name, email=customer_email,
+        product=product_name, linear_project_id=project_id, tenant_id=tenant_id)
+    send_contract(email=customer_email, name=customer_name, product=product_name, amount=amount)
+    shopify_order_id = (session.get("metadata") or {}).get("shopify_order_id")
     if shopify_order_id:
         fulfill_order(shopify_order_id)
 
-    logger.info(f"Full activation complete for {customer_email}")
-
 
 def _on_subscription_renewed(invoice: dict):
-    customer_email = invoice.get("customer_email")
-    amount = invoice.get("amount_paid", 0) / 100
-    logger.info(f"Subscription renewed: {customer_email} — ${amount}")
-    # TODO: update Supabase subscription_status, log to Notion ops page
+    logger.info("Subscription renewal received")
+    # TODO: durable lifecycle processing, scoped to the purchased subscription.
 
 
 def _on_subscription_cancelled(subscription: dict):
-    customer_id = subscription.get("customer")
-    logger.info(f"Subscription cancelled: customer={customer_id}")
-    # TODO: deprovision tenant in Supabase, update HubSpot deal stage
+    logger.info("Subscription cancellation received")
+    # TODO: durable lifecycle processing, scoped to the purchased subscription.
 
 
 def _on_refund(charge: dict):
-    customer_email = charge.get("billing_details", {}).get("email")
-    amount = charge.get("amount_refunded", 0) / 100
-    logger.warning(f"Refund issued: {customer_email} — ${amount}")
-    # TODO: flag in Supabase, update HubSpot, notify ops via Notion
+    logger.warning("Refund received")
+    # TODO: durable lifecycle processing, scoped to the refunded purchase.
