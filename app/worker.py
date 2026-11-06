@@ -33,6 +33,7 @@ from app.db import (
     JOB_STATUS_PROCESSING,
     SessionLocal,
 )
+from app.commercial_guard import validate_fulfillment_session
 from app.download import build_signed_download_url
 from app.email_adapter import get_email_adapter
 
@@ -68,15 +69,12 @@ def process_one(db: Session, job: FulfillmentJob) -> None:
     try:
         # ── 1. Verify payment with Stripe ────────────────────────────────
         session = stripe.checkout.Session.retrieve(job.checkout_session_id)
-        if session.payment_status not in ("paid", "no_payment_required"):
-            raise ValueError(
-                f"Session {job.checkout_session_id} payment_status={session.payment_status!r} — not paid"
-            )
-
-        # ── 2. Verify plan is in the product allow-list ──────────────────
+        # Paid status alone is insufficient: bind the Stripe Session ID and
+        # authenticated Stripe metadata to the exact queued job and offer.
         catalog = _get_offer_catalog()
-        if job.plan not in catalog:
-            raise ValueError(f"Plan {job.plan!r} is not in the product allow-list")
+        validate_fulfillment_session(
+            session, job.checkout_session_id, job.plan, catalog
+        )
 
         # ── 3. Record entitlement (idempotent) ────────────────────────────
         try:
