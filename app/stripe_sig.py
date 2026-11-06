@@ -52,7 +52,7 @@ def verify_header(payload: str, header: str, secret: str, tolerance: int = DEFAU
     expected = compute_signature(timestamp, payload, secret)
     if not any(hmac.compare_digest(expected, sig) for sig in signatures):
         raise SignatureError("no matching v1 signature")
-    if tolerance and timestamp < time.time() - tolerance:
+    if tolerance and abs(time.time() - timestamp) > tolerance:
         raise SignatureError("timestamp outside tolerance")
     return timestamp
 
