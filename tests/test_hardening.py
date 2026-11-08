@@ -65,6 +65,8 @@ def test_settings_production_passes_when_all_secrets_set():
         stripe_price_starter="price_c",
         stripe_price_pro="price_d",
         stripe_price_agency="price_e",
+        supabase_url="https://example.supabase.co",
+        supabase_service_key="service-key-test",
         environment="production",
     )
     assert s.validate_for_production() == []
