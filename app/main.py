@@ -12,6 +12,8 @@ Production hardening:
 """
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import logging.config
@@ -134,8 +136,27 @@ async def lifespan(app: FastAPI):
 
     init_db()
     logger.info('"Application started | env=%s"', s.environment)
-    yield
-    logger.info('"Application shutting down"')
+    mesh_task = None
+    if os.getenv("GARCAR_MESH_PUBLISH_ENABLED", "").lower() == "true":
+        async def run_mesh_reporting():
+            from mesh_heartbeat import send_heartbeat
+            while True:
+                try:
+                    await asyncio.to_thread(send_heartbeat, "degraded")
+                except Exception:
+                    logger.warning("Signed mesh heartbeat unverified")
+                await asyncio.sleep(300)
+        mesh_task = asyncio.create_task(run_mesh_reporting())
+    try:
+        yield
+    finally:
+        if mesh_task is not None:
+            mesh_task.cancel()
+            try:
+                await mesh_task
+            except asyncio.CancelledError:
+                pass
+        logger.info('"Application shutting down"')
 
 
 app = FastAPI(title="garcar-payments", lifespan=lifespan)
