@@ -1,13 +1,8 @@
-FROM python:3.11-slim
-
+# Garcar Payments staging-only signed telemetry canary.
+# Excludes payment supervisor, checkout, Stripe, webhooks, refunds, and fulfillment.
+FROM python:3.11-alpine
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app/ ./app/
-COPY backend/ ./backend/
-
-RUN mkdir -p contracts/signed logs
-
-CMD ["sh", "-c", "python -m app.supervisor"]
+COPY mesh_heartbeat.py /app/mesh_heartbeat.py
+USER 65532:65532
+CMD ["sh", "-c", "while true; do python -u /app/mesh_heartbeat.py; sleep 300; done"]
