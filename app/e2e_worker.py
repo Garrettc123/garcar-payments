@@ -10,6 +10,7 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.commercial_guard import validate_fulfillment_session
 from app.db import DownloadEntitlement, FulfillmentJob, IntegrationAction, JOB_STATUS_DEAD, JOB_STATUS_DONE, JOB_STATUS_FAILED, JOB_STATUS_PENDING, JOB_STATUS_PROCESSING, SessionLocal
 from app.download import build_signed_download_url
 from app.email_adapter import get_email_adapter
@@ -55,9 +56,6 @@ def _action(db: Session, job_id: int, stage: str) -> IntegrationAction:
 def _stage(db: Session, job: FulfillmentJob, name: str, fn):
     action = _action(db, job.id, name)
     if action.status == "completed":
-        # Every completed stage must be resumable without issuing another
-        # external write. HubSpot returns a typed contact; other stages persist
-        # a stable provider identifier in external_id.
         if name == "hubspot_match" and action.external_id:
             return HubSpotContact(action.external_id, job.customer_email)
         return action.external_id
@@ -93,8 +91,7 @@ def process_job(db: Session, job: FulfillmentJob) -> None:
     stage = "stripe_verification"
     try:
         session = stripe.checkout.Session.retrieve(job.checkout_session_id)
-        if session.payment_status not in ("paid", "no_payment_required"):
-            raise ValueError(f"payment_status={session.payment_status!r} is not paid")
+        validate_fulfillment_session(session, job.checkout_session_id, job.plan, _catalog())
         customer_id = session.get("customer") or ""
         email = ((session.get("customer_details") or {}).get("email") or session.get("customer_email") or job.customer_email or "").strip().lower()
         if not customer_id or not email:
