@@ -2,15 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, 'claude/**']
+    branches: [main, 'claude/**', 'feat/**', 'hardening/**']
     paths:
-      - 'app/**'
-      - 'backend/**'
-      - 'tests/**'
+      - '**/*.py'
       - 'requirements*.txt'
+      - 'pyproject.toml'
       - '.github/workflows/ci.yml'
-  pull_request:
-    branches: [main]
+  pull_request: {}
 
 permissions:
   contents: read
