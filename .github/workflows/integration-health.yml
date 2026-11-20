@@ -24,13 +24,28 @@ jobs:
       - name: Install dependencies
         run: pip install httpx fastapi
 
-      - name: Check /integrations/status endpoint
+      - name: Verify configured payments /health endpoint (fail closed)
         env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           GARCAR_PAYMENTS_URL: ${{ secrets.GARCAR_PAYMENTS_URL }}
+        shell: bash
         run: |
-          curl -sf "$GARCAR_PAYMENTS_URL/health" || echo "Health endpoint unreachable"
+          set -euo pipefail
+          SERVICE_URL="${APP_BASE_URL:-${GARCAR_PAYMENTS_URL:-}}"
+          if [ -z "$SERVICE_URL" ]; then
+            echo "::error::APP_BASE_URL and GARCAR_PAYMENTS_URL are unset; cannot verify deployment health."
+            exit 1
+          fi
+          case "$SERVICE_URL" in
+            https://*) ;;
+            *) echo "::error::Payments service URL must use HTTPS."; exit 1 ;;
+          esac
+          echo "Checking configured payments service health; no credentials or URL printed."
+          curl --silent --show-error --fail --max-time 15 --retry 2 --output /dev/null "${SERVICE_URL%/}/health"
+          echo "Verified HTTP 2xx from configured /health endpoint."
 
-      - name: Verify required secrets are set
+
+      - name: Report connector configuration names (not integration readiness)
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
@@ -42,7 +57,7 @@ jobs:
           SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "Checking secrets presence..."
+          echo "Credential presence is not proof of a functional integration or successful payment."
           [ -n "$STRIPE_SECRET_KEY" ]       && echo "✅ STRIPE_SECRET_KEY"       || echo "❌ STRIPE_SECRET_KEY missing"
           [ -n "$HUBSPOT_TOKEN" ]           && echo "✅ HUBSPOT_TOKEN"           || echo "❌ HUBSPOT_TOKEN missing"
           [ -n "$SUPABASE_URL" ]            && echo "✅ SUPABASE_URL"            || echo "❌ SUPABASE_URL missing"

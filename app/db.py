@@ -1,9 +1,40 @@
+import logging
 import os
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
+logger = logging.getLogger("garcar.payments.db")
+
+
+def resolve_database_url() -> str:
+    """Resolve the SQLAlchemy URL.
+
+    - DATABASE_URL set: use it (Postgres in production). Bare ``postgres://`` /
+      ``postgresql://`` URLs are rewritten to the psycopg v3 driver.
+    - Unset on a serverless runtime (Vercel / AWS Lambda): the deployment
+      bundle is read-only, so a relative SQLite file cannot be opened and the
+      app crashed at startup. Fall back to /tmp so the process can boot, and log
+      loudly: /tmp is ephemeral, so billing events and fulfillment jobs are NOT
+      durable until DATABASE_URL is configured.
+    - Unset elsewhere (local dev, tests): ./local.db as before.
+    """
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url:
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg://" + url[len(prefix):]
+        return url
+    if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        logger.error(
+            "DATABASE_URL is not set on a serverless runtime; using ephemeral "
+            "SQLite in /tmp. Data will be lost on cold start. Set DATABASE_URL to Postgres."
+        )
+        return "sqlite:////tmp/garcar_payments.db"
+    return "sqlite:///./local.db"
+
+
+DATABASE_URL = resolve_database_url()
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

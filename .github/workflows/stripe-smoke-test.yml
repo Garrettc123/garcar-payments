@@ -6,21 +6,58 @@ on:
   workflow_dispatch:
     inputs:
       event:
-        description: "Stripe event to trigger"
-        required: false
-        default: "payment_intent.succeeded"
+        description: "Allowlisted Stripe test-mode event"
+        required: true
+        type: choice
+        options:
+          - payment_intent.succeeded
+          - checkout.session.completed
+        default: payment_intent.succeeded
 
-# Least privilege: the token gets nothing by default; each job asks only for what it needs.
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  stripe-smoke-test:
-    permissions: {}
+  health-only:
+    name: Read-only production health check
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
     steps:
+      - name: Verify configured HTTPS health endpoint
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_BASE_URL:-}" ]; then
+            echo "::error::APP_BASE_URL is missing; production service not verified."
+            exit 1
+          fi
+          case "$APP_BASE_URL" in
+            https://*) ;;
+            *) echo "::error::APP_BASE_URL must use HTTPS."; exit 1 ;;
+          esac
+          echo "Checking configured service /health without printing its URL."
+          curl --fail --silent --show-error --max-time 15 --output /dev/null "${APP_BASE_URL%/}/health"
+          echo "Read-only HTTPS health request returned success (not payment readiness)."
+
+  test-fixture:
+    name: Manual Stripe test-mode fixture only
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fail closed on wrong Stripe key or event
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+          STRIPE_EVENT: ${{ inputs.event }}
+        run: bash scripts/stripe-smoke-preflight.sh
       - name: Install Stripe CLI
         run: |
+          set -euo pipefail
           curl -fsSL https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/stripe.gpg > /dev/null
@@ -29,32 +66,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y stripe
           stripe --version
-
-      - name: Trigger Stripe test event
+      - name: Trigger Stripe fixture in test mode only
         env:
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_EVENT: ${{ github.event.inputs.event || 'payment_intent.succeeded' }}
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+          STRIPE_EVENT: ${{ inputs.event }}
+        shell: bash
         run: |
-          if [ -z "$STRIPE_SECRET_KEY" ]; then
-            echo "⚠️  STRIPE_SECRET_KEY not configured — skipping smoke test"
-            exit 0
-          fi
-          stripe trigger "$STRIPE_EVENT" \
-            --api-key "$STRIPE_SECRET_KEY"
-
-      - name: Health check Railway endpoint
-        env:
-          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-        run: |
-          if [ -z "$APP_BASE_URL" ]; then
-            echo "⚠️  APP_BASE_URL not configured — skipping health check"
-            exit 0
-          fi
-          echo "Checking $APP_BASE_URL/health ..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_BASE_URL/health")
-          echo "Status: $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "Health check FAILED: HTTP $STATUS"
-            exit 1
-          fi
-          echo "Health check PASSED"
+          set -euo pipefail
+          bash scripts/stripe-smoke-preflight.sh
+          stripe trigger "$STRIPE_EVENT" --api-key "$STRIPE_TEST_SECRET_KEY"
