@@ -11,6 +11,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_DIR}/test.db"
 for _k, _v in {
     # Split so secret scanners do not flag a dummy value as a live-format Stripe key.
     "STRIPE_SECRET_KEY": "sk_" + "test_placeholder",
+    "STRIPE_PRICE_AUDIT": "price_audit_test",
+    "STRIPE_PRICE_DEALDESK": "price_dealdesk_test",
     "STRIPE_PRICE_STARTER": "price_starter_test",
     "STRIPE_PRICE_PRO": "price_pro_test",
     "STRIPE_PRICE_AGENCY": "price_agency_test",
