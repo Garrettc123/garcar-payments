@@ -62,7 +62,7 @@ class Default(WorkerEntrypoint):
         path = urlparse(str(getattr(request, "url", "") or "")).path or "/"
 
         if path in ("/health", "/healthz", "/livez", "/"):
-            return _json({"status": "alive", "service": "garcar-payments", "edge": True, "fastapi": _app is not None})
+            return _json({"status": "ok", "service": "garcar-payments", "edge": True, "fastapi": _app is not None})
 
         if path == "/readyz":
             # A running Worker is not payment-ready without the journal and queue.
