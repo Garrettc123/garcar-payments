@@ -57,8 +57,8 @@ def verify_header(payload: str, header: str, secret: str, tolerance: int = DEFAU
     return timestamp
 
 
-def parse_verified_event(payload: str, header: str, secret: str) -> dict:
-    verify_header(payload, header, secret)
+def parse_verified_event(payload: str, header: str, secret: str, tolerance: int = DEFAULT_TOLERANCE) -> dict:
+    verify_header(payload, header, secret, tolerance=tolerance)
     try:
         event = json.loads(payload)
     except json.JSONDecodeError as exc:
