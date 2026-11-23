@@ -76,6 +76,9 @@ def process_one(db: Session, job: FulfillmentJob) -> None:
             session, job.checkout_session_id, job.plan, catalog
         )
 
+        if not (job.customer_email or "").strip():
+            raise ValueError("Verified fulfillment recipient required")
+
         # ── 3. Record entitlement (idempotent) ────────────────────────────
         try:
             entitlement = DownloadEntitlement(

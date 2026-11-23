@@ -19,3 +19,6 @@ dev = [
     "workers-py>=1.9",
     "workers-runtime-sdk",
 ]
+
+[tool.vercel]
+entrypoint = "backend.mars_tiers:app"

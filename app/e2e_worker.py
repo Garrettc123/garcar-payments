@@ -154,8 +154,9 @@ def process_job(db: Session, job: FulfillmentJob) -> None:
             if action.status != "completed":
                 url = build_signed_download_url(plan=job.plan or "", email=email, event_id=job.stripe_event_id)
                 offer = _catalog()[job.plan]
-                get_email_adapter().send_download_link(to=email, product_name=offer.get("name", job.plan), download_url=url)
+                receipt_id = get_email_adapter().send_download_link(to=email, product_name=offer.get("name", job.plan), download_url=url)
                 job.email_sent = True
+                action.external_id = receipt_id
                 action.status = "completed"
                 action.attempts += 1
                 db.commit()

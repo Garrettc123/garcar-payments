@@ -1,28 +1,8 @@
-"""
-Email delivery adapter for garcar-payments.
-
-Production backend uses Resend (https://resend.com).
-Tests inject ``TestEmailAdapter`` which records messages in-memory and
-never sends real email.
-
-Usage::
-
-    from app.email_adapter import get_email_adapter
-    adapter = get_email_adapter()
-    adapter.send_download_link("buyer@example.com", "Product Name", "https://…")
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from html import escape
 from typing import Optional
-
-
-@dataclass
-class EmailMessage:
-    to: str
-    subject: str
-    html: str
 
 
 class EmailAdapter(ABC):
@@ -33,7 +13,7 @@ class EmailAdapter(ABC):
         product_name: str,
         download_url: str,
         expires_in_hours: int = 24,
-    ) -> None:
+    ) -> str:
         ...
 
 
@@ -55,14 +35,14 @@ class ResendEmailAdapter(EmailAdapter):
         product_name: str,
         download_url: str,
         expires_in_hours: int = 24,
-    ) -> None:
+    ) -> str:
         html = (
-            f"<p>Thank you for your purchase of <strong>{product_name}</strong>.</p>"
-            f"<p><a href='{download_url}'>Download your file</a></p>"
+            f"<p>Thank you for your purchase of <strong>{escape(product_name)}</strong>.</p>"
+            f"<p><a href='{escape(download_url, quote=True)}'>Download your file</a></p>"
             f"<p>This link expires in {expires_in_hours} hour(s).</p>"
             f"<p>— Garcar Enterprise</p>"
         )
-        self._resend.Emails.send(
+        response = self._resend.Emails.send(
             {
                 "from": self._from,
                 "to": to,
@@ -71,31 +51,10 @@ class ResendEmailAdapter(EmailAdapter):
             }
         )
 
-
-class FakeEmailAdapter(EmailAdapter):
-    """In-memory adapter used in tests.  Never sends real email."""
-
-    def __init__(self) -> None:
-        self.sent: list[EmailMessage] = []
-
-    def send_download_link(
-        self,
-        to: str,
-        product_name: str,
-        download_url: str,
-        expires_in_hours: int = 24,
-    ) -> None:
-        self.sent.append(
-            EmailMessage(
-                to=to,
-                subject=f"Your {product_name} download link",
-                html=f"<a href='{download_url}'>Download</a>",
-            )
-        )
-
-
-# Keep the old name as an alias for backward compatibility
-TestEmailAdapter = FakeEmailAdapter
+        message_id = response.get("id") if isinstance(response, dict) else None
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise RuntimeError("Email acceptance unconfirmed by provider")
+        return message_id
 
 
 # Module-level singleton — replaced by tests via ``set_email_adapter``
@@ -108,18 +67,7 @@ def get_email_adapter() -> EmailAdapter:
         from app.settings import get_settings  # noqa: PLC0415
 
         s = get_settings()
-        if s.resend_api_key:
-            _adapter = ResendEmailAdapter(s.resend_api_key, s.email_from)
-        else:
-            # Fall back to no-op test adapter; warn in production
-            if s.is_production():
-                import sys
-
-                print(
-                    "[WARN] RESEND_API_KEY not set — email delivery disabled in production!",
-                    file=sys.stderr,
-                )
-            _adapter = FakeEmailAdapter()
+        _adapter = ResendEmailAdapter(s.resend_api_key, s.email_from)
     return _adapter
 
 
