@@ -3,7 +3,6 @@
 from __future__ import annotations
 import json
 import os
-import secrets
 import subprocess
 import sys
 import urllib.error
@@ -35,13 +34,28 @@ def stripe(endpoint: str, method: str = "GET", data: dict | None = None) -> dict
         sys.exit(f"Stripe error on {endpoint}: {exc.read().decode()}")
 
 
+EXPECTED_STRIPE_ACCOUNT_ID = "acct_1RzegCAP6t2mSgAY"
+
+
+def assert_active_account() -> None:
+    """Do not let AutoKey create products or rotate endpoints in a legacy account."""
+    account = stripe("account")
+    if account.get("id") != EXPECTED_STRIPE_ACCOUNT_ID:
+        sys.exit("BLOCKED: Stripe key is not associated with the designated active Garcar account")
+
+
 def ensure_product(name: str, amount_cents: int, mode: str) -> str:
     q = urllib.parse.quote(f"name:'{name}'")
     products = stripe(f"products/search?query={q}")
     product_id = products["data"][0]["id"] if products.get("data") else stripe("products", method="POST", data={"name": name})["id"]
-    prices = stripe(f"prices?product={product_id}&active=true")
-    if prices.get("data"):
-        return prices["data"][0]["id"]
+    prices = stripe(f"prices?product={product_id}&active=true&limit=100")
+    for price in prices.get("data", []):
+        recurring = (price.get("recurring") or {})
+        matches_mode = ((mode == "subscription" and recurring.get("interval") == "month")
+                        or (mode == "payment" and not price.get("recurring")))
+        if (matches_mode and price.get("active") and price.get("currency") == "usd"
+                and price.get("unit_amount") == amount_cents):
+            return price["id"]
     data = {"product": product_id, "currency": "usd", "unit_amount": str(amount_cents)}
     if mode == "subscription":
         data["recurring[interval]"] = "month"
@@ -49,11 +63,11 @@ def ensure_product(name: str, amount_cents: int, mode: str) -> str:
 
 
 def ensure_queues() -> None:
-    result = run(["npx", "wrangler", "queues", "list"], check=False)
+    result = run(["npx", "wrangler", "queues", "list"])
     existing = (result.stdout or "") + (result.stderr or "")
     for queue in ("stripe-events", "stripe-events-dlq"):
         if queue not in existing:
-            run(["npx", "wrangler", "queues", "create", queue], check=False)
+            run(["npx", "wrangler", "queues", "create", queue])
 
 
 def wrangler_secret(name: str, value: str) -> None:
@@ -70,44 +84,48 @@ def main() -> None:
         "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "HUBSPOT_ACCESS_TOKEN",
         "ASANA_ACCESS_TOKEN", "ASANA_WORKSPACE_GID", "NOTION_TOKEN",
         "NOTION_REVENUE_DB_ID", "LINEAR_API_KEY", "LINEAR_TEAM_ID",
-        "RESEND_API_KEY", "EMAIL_FROM",
+        "RESEND_API_KEY", "EMAIL_FROM", "DOWNLOAD_SIGNING_SECRET",
     ]
     missing = [key for key in required if not os.environ.get(key)]
     if missing:
         sys.exit(f"Missing required production env: {', '.join(missing)}")
 
+    assert_active_account()
+    app_url = os.environ["APP_BASE_URL"].rstrip("/")
+    webhook_url = f"{app_url}/stripe-webhook"
+    endpoints = stripe("webhook_endpoints?limit=100")
+    if any(endpoint.get("url") == webhook_url for endpoint in endpoints.get("data", [])):
+        sys.exit("BLOCKED: webhook URL already registered; preserve existing endpoint until verified rotation")
+    if endpoints.get("has_more"):
+        sys.exit("BLOCKED: webhook inventory is paginated; inspect remaining endpoints before creating another")
+
     ensure_queues()
     prices = {
-        "STRIPE_PRICE_AUDIT": ensure_product("Operational Audit", 19700, "payment"),
-        "STRIPE_PRICE_DEALDESK": ensure_product("AI Deal Desk Setup", 49700, "payment"),
+        "STRIPE_PRICE_AUDIT": ensure_product("Lead Leak Audit", 4700, "payment"),
+        "STRIPE_PRICE_DEALDESK": ensure_product("Contractor Callback Review", 49700, "payment"),
         "STRIPE_PRICE_STARTER": ensure_product("Starter Automation", 99700, "subscription"),
         "STRIPE_PRICE_PRO": ensure_product("Pro Automation", 249700, "subscription"),
         "STRIPE_PRICE_AGENCY": ensure_product("Agency Automation", 499700, "subscription"),
     }
 
-    app_url = os.environ["APP_BASE_URL"].rstrip("/")
-    webhook_url = f"{app_url}/stripe-webhook"
-    endpoints = stripe("webhook_endpoints")
-    for endpoint in endpoints.get("data", []):
-        if endpoint["url"] == webhook_url:
-            stripe(f"webhook_endpoints/{endpoint['id']}", method="DELETE")
-            break
     webhook = stripe("webhook_endpoints", method="POST", data={
         "url": webhook_url,
         "enabled_events[0]": "checkout.session.completed",
-        "enabled_events[1]": "invoice.paid",
-        "enabled_events[2]": "invoice.payment_failed",
-        "enabled_events[3]": "customer.subscription.created",
-        "enabled_events[4]": "customer.subscription.updated",
-        "enabled_events[5]": "customer.subscription.deleted",
-        "enabled_events[6]": "payment_intent.succeeded",
-        "enabled_events[7]": "payment_intent.payment_failed",
+        "enabled_events[1]": "checkout.session.async_payment_succeeded",
+        "enabled_events[2]": "checkout.session.async_payment_failed",
+        "enabled_events[3]": "invoice.paid",
+        "enabled_events[4]": "invoice.payment_failed",
+        "enabled_events[5]": "customer.subscription.created",
+        "enabled_events[6]": "customer.subscription.updated",
+        "enabled_events[7]": "customer.subscription.deleted",
+        "enabled_events[8]": "payment_intent.succeeded",
+        "enabled_events[9]": "payment_intent.payment_failed",
     })
 
     secrets_map = {
         "STRIPE_SECRET_KEY": os.environ["STRIPE_SECRET_KEY"],
         "STRIPE_WEBHOOK_SECRET": webhook["secret"],
-        "DOWNLOAD_SIGNING_SECRET": os.environ.get("DOWNLOAD_SIGNING_SECRET") or secrets.token_hex(32),
+        "DOWNLOAD_SIGNING_SECRET": os.environ["DOWNLOAD_SIGNING_SECRET"],
         "APP_BASE_URL": app_url,
         "ENVIRONMENT": os.environ.get("ENVIRONMENT", "production"),
         **prices,
