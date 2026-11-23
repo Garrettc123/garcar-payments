@@ -20,5 +20,9 @@ dev = [
     "workers-runtime-sdk",
 ]
 
+# Expose the documented Payments API (checkout + signed webhook + readiness).
+# backend.mars_tiers:app is a separate MARS subscription showcase and does
+# not implement the required payments webhook or fulfillment contract.
+# Vercel only hosts the API: the durable fulfillment worker runs separately.
 [tool.vercel]
-entrypoint = "backend.mars_tiers:app"
+entrypoint = "app.main:app"
