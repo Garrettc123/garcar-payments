@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 COPY backend/ ./backend/
+COPY mesh_heartbeat.py ./mesh_heartbeat.py
 
 RUN mkdir -p contracts/signed logs
 
