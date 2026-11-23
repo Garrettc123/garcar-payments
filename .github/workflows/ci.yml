@@ -7,6 +7,7 @@ on:
       - 'app/**'
       - 'backend/**'
       - 'tests/**'
+      - 'pyproject.toml'
       - 'requirements*.txt'
       - '.github/workflows/ci.yml'
   pull_request:
