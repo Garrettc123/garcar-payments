@@ -79,6 +79,27 @@ jobs:
           fi
           echo "Required secrets present"
 
+      - name: Verify account identity and durable D1 binding before any write
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, tomllib, urllib.request
+          from pathlib import Path
+          cfg = tomllib.loads(Path("wrangler.toml").read_text())
+          dbs = cfg.get("d1_databases", [])
+          if not any(x.get("binding") == "DB" and x.get("database_id") and
+                     "PASTE_" not in x.get("database_id", "") for x in dbs):
+              raise SystemExit("BLOCKED: real Cloudflare D1 DB binding is required")
+          req = urllib.request.Request("https://api.stripe.com/v1/account")
+          req.add_header("Authorization", "Bearer " + os.environ["STRIPE_SECRET_KEY"])
+          with urllib.request.urlopen(req, timeout=15) as resp:
+              account = json.load(resp)
+          if account.get("id") != "acct_1RzegCAP6t2mSgAY":
+              raise SystemExit("BLOCKED: Stripe key belongs to the wrong account")
+          print("Active Stripe account identity and D1 binding verified")
+          PY
+
       - name: Deploy Worker (bootstrap)
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
         env:
@@ -121,25 +142,23 @@ jobs:
 
       - name: Redeploy after secrets
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
-        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy2.log || true
-          tail -80 deploy2.log || true
+          set -euo pipefail
+          npx wrangler deploy --name garcar-payments 2>&1 | tee deploy2.log
 
-      - name: Health check
+      - name: Payment readiness check
         if: ${{ inputs.skip_deploy != true && inputs.skip_deploy != 'true' }}
-        continue-on-error: true
         run: |
           BASE_URL="${APP_BASE_URL}"
           sleep 15
           ok=0
           for try_url in "$BASE_URL" "${WORKERS_URL:-}"; do
             [ -z "$try_url" ] && continue
-            echo "Probing $try_url/health"
+            echo "Probing $try_url/readyz"
             for i in 1 2 3 4 5; do
-              CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$try_url/health" || echo "000")
+              CODE=$(curl -s -o /tmp/hbody -w "%{http_code}" "$try_url/readyz" || echo "000")
               echo "  Attempt $i → HTTP $CODE"
               cat /tmp/hbody 2>/dev/null || true
               echo
@@ -152,13 +171,12 @@ jobs:
             done
           done
           if [ "$ok" != "1" ]; then
-            echo "Health check did not return 200 — Worker may still be provisioning."
-            echo "Check Cloudflare dashboard → Workers → garcar-payments for the live URL."
-            exit 0
+            echo "Payment readiness failed: Cloudflare Worker must have queue, D1 and webhook signing secret." >&2
+            exit 1
           fi
 
       - name: Summary
-        if: always()
+        if: success()
         env:
           INPUT_URL: ${{ inputs.app_base_url }}
         run: |
@@ -170,6 +188,6 @@ jobs:
           echo "Detected  : ${WORKERS_URL:-none}"
           echo "Webhook   : ${APP_BASE_URL}/stripe-webhook"
           echo "Queues    : stripe-events + stripe-events-dlq"
-          echo "AutoKey   : completed (secrets + Stripe + queues)"
+          echo "AutoKey   : completed only if every preceding step succeeded"
           echo "APP_BASE_URL secret pushed to Worker"
           echo "=============================================="
