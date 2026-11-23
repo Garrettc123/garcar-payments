@@ -1,4 +1,4 @@
-name: Vercel Status Check
+name: Vercel Provider Status Check
 
 on:
   pull_request:
@@ -6,16 +6,47 @@ on:
   push:
     branches: [main]
 
-# Least privilege: the token gets nothing by default; each job asks only for what it needs.
-permissions: {}
+# Check the Vercel-supplied GitHub commit status. Do NOT fabricate deployment
+# success when the provider has failed, or when no provider status exists.
+permissions:
+  contents: read
+  statuses: read
 
 jobs:
   vercel-status:
-    permissions: {}
-    name: Vercel Status Check
+    name: Vercel provider commit status (not runtime health)
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Vercel status check placeholder
+      - name: Require real Vercel status
+        shell: bash
         run: |
-          echo "Vercel deployment is handled by Railway. This check always passes."
-          exit 0
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            state="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              --jq '[.[] | select(.context == "Vercel")] | if length == 0 then "missing" else .[0].state end')"
+            case "$state" in
+              success)
+                echo "Vercel provider reports success for commit ${COMMIT_SHA}."
+                echo "NOTE: this does not establish application health or webhook completion."
+                exit 0
+                ;;
+              failure|error)
+                echo "::error::Vercel provider reports ${state}; deployment is blocked."
+                exit 1
+                ;;
+              pending|missing)
+                echo "Vercel status is ${state}; checking again (${attempt}/6)."
+                sleep 10
+                ;;
+              *)
+                echo "::error::Unrecognized Vercel provider status: ${state}"
+                exit 1
+                ;;
+            esac
+          done
+          echo "::error::No successful Vercel provider status was observed for this commit."
+          exit 1
