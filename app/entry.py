@@ -19,6 +19,8 @@ except Exception as exc:
 TRACE_RE = re.compile(r"^gc_(test|stage|live)_([0-9]{8})_([0-9A-HJKMNP-TV-Z]{26})$")
 ALLOWED = {
     "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
     "invoice.paid",
     "invoice.payment_succeeded",
     "invoice.payment_failed",
@@ -59,8 +61,18 @@ class Default(WorkerEntrypoint):
         from urllib.parse import urlparse
         path = urlparse(str(getattr(request, "url", "") or "")).path or "/"
 
-        if path in ("/health", "/healthz", "/livez", "/readyz", "/"):
+        if path in ("/health", "/healthz", "/livez", "/"):
             return _json({"status": "ok", "service": "garcar-payments", "edge": True, "fastapi": _app is not None})
+
+        if path == "/readyz":
+            # A running Worker is not payment-ready without the journal and queue.
+            missing = [name for name, attr in (
+                ("STRIPE_WEBHOOK_SECRET", "STRIPE_WEBHOOK_SECRET"),
+                ("STRIPE_QUEUE", "STRIPE_QUEUE"),
+                ("DB", "DB"),
+            ) if not getattr(self.env, attr, None)]
+            return _json({"ready": not missing, "service": "garcar-payments",
+                          "missing_bindings": missing}, 503 if missing else 200)
 
         if path in ("/stripe-webhook", "/webhooks/stripe"):
             body = await request.text()

@@ -1,29 +1,39 @@
-# .github/workflows/garcar-pipeline.yml
-# garcar-payments — ATLAS validation + notify (runs alongside deploy.yml)
-name: Garcar Pipeline
+# The historic push-to-main path called a reusable production pipeline.
+# Manual-only invocation avoids surprise deployments from a safety patch.
+name: Garcar Pipeline (manual release)
+
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       environment:
-        description: Target environment
-        default: production
+        description: Destination after operator review
+        required: true
+        default: staging
         type: choice
-        options: [production, staging, preview]
+        options: [staging, preview, production]
 
-# Least privilege: the token gets nothing by default; each job asks only for what it needs.
 permissions: {}
 
 jobs:
+  production-approval:
+    if: ${{ inputs.environment == 'production' }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Approval checkpoint
+        run: echo "GitHub production environment gate completed; no deployment executed here"
+
   pipeline:
-    # First-party reusable workflow (Garrettc123/garcar-control-plane@main) is left on @main on purpose.
+    needs: production-approval
+    if: ${{ always() && (inputs.environment != 'production' || needs.production-approval.result == 'success') }}
     permissions:
       contents: read
     uses: Garrettc123/garcar-control-plane/.github/workflows/garcar-deploy.yml@main
     with:
       service_name: garcar-payments
-      environment: ${{ github.event.inputs.environment || 'production' }}
+      environment: ${{ inputs.environment }}
       railway_service_id: ""
       deploy_edge_function: ""
       run_schema_migration: false

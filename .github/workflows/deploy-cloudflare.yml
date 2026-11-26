@@ -47,6 +47,25 @@ jobs:
           uv run pywrangler --help
           uv run pywrangler sync || true
 
+      - name: Fail closed before deployment if payment journal is unbound
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("wrangler.toml").read_text())
+          databases = data.get("d1_databases", [])
+          configured = any(
+              item.get("binding") == "DB"
+              and item.get("database_name") == "garcar-payments-db"
+              and item.get("database_id")
+              and "PASTE_" not in item["database_id"]
+              for item in databases
+          )
+          assert configured, "BLOCKED: real DB D1 binding required before payments deploy"
+          assert any(q.get("binding") == "STRIPE_QUEUE" for q in data.get("queues", {}).get("producers", [])), "BLOCKED: Stripe queue binding missing"
+          assert any(q.get("dead_letter_queue") == "stripe-events-dlq" for q in data.get("queues", {}).get("consumers", [])), "BLOCKED: Stripe DLQ missing"
+          PY
+
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -61,7 +80,7 @@ jobs:
         run: |
           URL="${APP_BASE_URL:-https://garcar-payments.garrettc123.workers.dev}"
           for i in 1 2 3 4 5 6; do
-            CODE=$(curl -sS -o /tmp/hbody -w "%{http_code}" "$URL/health" || echo "000")
+            CODE=$(curl -sS -o /tmp/hbody -w "%{http_code}" "$URL/readyz" || echo "000")
             echo "Attempt $i → HTTP $CODE"
             cat /tmp/hbody 2>/dev/null || true
             if [ "$CODE" = "200" ]; then

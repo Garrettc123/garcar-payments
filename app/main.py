@@ -78,31 +78,31 @@ def _build_offer_catalog() -> dict[str, dict[str, Optional[str]]]:
     return {
         "audit": {
             "name": "Operational Audit",
-            "price_id": s.stripe_price_audit or "price_1TGmo7FKGbk21LK5szrPJkRl",
+            "price_id": s.stripe_price_audit,
             "mode": "payment",
-            "description": "$197 lead-leak / missed-call operational audit",
+            "description": "$47 Lead Leak Audit",
         },
         "dealdesk": {
-            "name": "AI Deal Desk Setup",
-            "price_id": s.stripe_price_dealdesk or "price_1T6lv3FKGbk21LK5J6HCIw2E",
+            "name": "Contractor Callback Review",
+            "price_id": s.stripe_price_dealdesk,
             "mode": "payment",
-            "description": "$497 AI call-handling + CRM setup package",
+            "description": "$497 one-time Contractor Callback Review",
         },
         "starter": {
             "name": "Starter Automation Subscription",
-            "price_id": s.stripe_price_starter or "price_1TlkwBFKGbk21LK5ZrbIlV6t",
+            "price_id": s.stripe_price_starter,
             "mode": "subscription",
             "description": "Starter recurring automation plan",
         },
         "pro": {
             "name": "Pro Automation Subscription",
-            "price_id": s.stripe_price_pro or "price_1TlkwBFKGbk21LK5egwCuCru",
+            "price_id": s.stripe_price_pro,
             "mode": "subscription",
             "description": "Professional recurring automation plan",
         },
         "agency": {
             "name": "Agency Automation Subscription",
-            "price_id": s.stripe_price_agency or "price_1TIeAJFKGbk21LK5emYRdFRm",
+            "price_id": s.stripe_price_agency,
             "mode": "subscription",
             "description": "Agency / managed automation recurring plan",
         },
@@ -186,7 +186,7 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
     currency: Optional[str] = None
     customer_email: Optional[str] = None
 
-    if event_type == "checkout.session.completed":
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded") and obj.get("payment_status") == "paid":
         amount_total = obj.get("amount_total")
         currency = obj.get("currency")
         customer_email = (obj.get("customer_details") or {}).get("email") or obj.get("customer_email")
@@ -206,8 +206,17 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
         "amount_total": amount_total,
         "currency": currency,
         "customer_email": customer_email,
-        "outcomes": {"event_type": event_type, "livemode": event.get("livemode", False)},
-        "all_ok": True,
+        "outcomes": {"event_type": event_type, "livemode": event.get("livemode", False),
+                     "payment_status": obj.get("payment_status")},
+        # Event acceptance does not mean payment settlement. All non-payment
+        # events and unpaid checkouts remain explicitly unconfirmed.
+        "all_ok": bool(event_type in ("invoice.paid", "invoice.payment_succeeded",
+                                      "payment_intent.succeeded") or
+                       (event_type in ("checkout.session.completed",
+                                       "checkout.session.async_payment_succeeded")
+                        and obj.get("payment_status") == "paid"
+                        and isinstance(obj.get("amount_total"), int)
+                        and obj["amount_total"] > 0)),
     }
 
     try:
@@ -400,8 +409,9 @@ async def stripe_webhook(request: Request, background: BackgroundTasks):
     if is_new_event:
         await _handle_subscription_event(event_type, obj)
 
-    # Enqueue fulfillment job for paid checkout sessions
-    if event_type == "checkout.session.completed":
+    # Only paid checkout events may be considered for fulfillment. The helper
+    # applies the same fail-closed payment/plan/identity gates as the Worker.
+    if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         _enqueue_fulfillment(event, obj)
 
     _append_gc_ledger(event, obj)
@@ -511,15 +521,18 @@ async def _handle_subscription_event(event_type: str, obj: dict) -> None:
 
 
 def _enqueue_fulfillment(event: dict, obj: dict) -> None:
-    """Create a FulfillmentJob row, skipping duplicates (idempotent)."""
+    """Create an idempotent FulfillmentJob only for a confirmed paid checkout."""
     event_id = event.get("id", "unknown")
-    # Server-side plan from Stripe metadata — not from untrusted client input
-    metadata = obj.get("metadata") or {}
-    plan = metadata.get("garcar_plan", "")
+    amount = obj.get("amount_total")
+    if (obj.get("payment_status") != "paid" or
+            not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0):
+        logger.info('"fulfillment_withheld_unpaid | event_id=%s"', event_id)
+        return
 
-    # Product allow-list gate before enqueueing
-    if plan and plan not in OFFER_CATALOG:
-        logger.warning('"fulfillment_unknown_plan | plan=%s | event_id=%s"', plan, event_id)
+    metadata = obj.get("metadata") or {}
+    plan = metadata.get("garcar_plan") if isinstance(metadata, dict) else None
+    if not plan or plan not in OFFER_CATALOG:
+        logger.warning('"fulfillment_withheld_unknown_plan | event_id=%s"', event_id)
         return
 
     customer_email = (
@@ -528,6 +541,9 @@ def _enqueue_fulfillment(event: dict, obj: dict) -> None:
         or ""
     )
     checkout_session_id = obj.get("id", "")
+    if not isinstance(customer_email, str) or not customer_email.strip() or not checkout_session_id:
+        logger.warning('"fulfillment_withheld_missing_identity | event_id=%s"', event_id)
+        return
 
     db = SessionLocal()
     try:

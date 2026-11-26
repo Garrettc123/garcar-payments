@@ -93,7 +93,7 @@ class D1Repo:
             return True
         except Exception as e:
             # Unique violation → already processed
-            if "UNIQUE" in str(e).upper() or "constraint" in str(e).lower():
+            if "unique" in str(e).lower() and "event_id" in str(e).lower():
                 return False
             raise
 
@@ -121,7 +121,7 @@ class D1Repo:
             ).run()
             return True
         except Exception as e:
-            if "UNIQUE" in str(e).upper() or "constraint" in str(e).lower():
+            if "unique" in str(e).lower() and "stripe_event_id" in str(e).lower():
                 return False
             raise
 
