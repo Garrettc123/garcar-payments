@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.settings import Settings
 from app.download import build_signed_download_url, verify_download_token
-from app.email_adapter import FakeEmailAdapter as TestEmailAdapter, set_email_adapter
+from app.email_adapter import ResendEmailAdapter, get_email_adapter
 
 
 # ── Settings: production validation ─────────────────────────────────────────
@@ -144,20 +144,27 @@ def test_download_verify_bad_signature():
 
 # ── Email adapter ─────────────────────────────────────────────────────────────
 
-def test_test_email_adapter_records_messages():
-    adapter = TestEmailAdapter()
-    adapter.send_download_link("user@example.com", "Operational Audit", "https://example.com/dl")
-    assert len(adapter.sent) == 1
-    assert adapter.sent[0].to == "user@example.com"
-    assert "Operational Audit" in adapter.sent[0].subject
+def test_missing_email_provider_blocks_fulfillment(monkeypatch):
+    import app.email_adapter as delivery
+    from types import SimpleNamespace
+    monkeypatch.setattr(delivery, "_adapter", None)
+    with patch("app.settings.get_settings", return_value=SimpleNamespace(resend_api_key="", email_from="")):
+        with pytest.raises(ValueError, match="RESEND_API_KEY"):
+            get_email_adapter()
 
 
-def test_test_email_adapter_never_calls_resend():
-    """TestEmailAdapter must never import or call resend."""
-    adapter = TestEmailAdapter()
-    with patch("resend.Emails.send") as mock_send:
-        adapter.send_download_link("x@example.com", "Product", "https://example.com/dl")
-    mock_send.assert_not_called()
+@pytest.mark.parametrize("receipt", [None, {}, {"id": ""}])
+def test_delivery_requires_provider_acceptance(receipt):
+    with patch("resend.Emails.send", return_value=receipt):
+        adapter = ResendEmailAdapter("unit-only", "sender@example.invalid")
+        with pytest.raises(RuntimeError, match="acceptance unconfirmed"):
+            adapter.send_download_link("user@example.invalid", "Review", "https://example.invalid/file")
+
+
+def test_delivery_returns_provider_receipt():
+    with patch("resend.Emails.send", return_value={"id": "accepted-1"}):
+        adapter = ResendEmailAdapter("unit-only", "sender@example.invalid")
+        assert adapter.send_download_link("user@example.invalid", "Review", "https://example.invalid/file") == "accepted-1"
 
 
 # ── /livez and /readyz ────────────────────────────────────────────────────────
