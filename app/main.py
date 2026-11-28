@@ -230,6 +230,23 @@ def _append_gc_ledger(event: dict, obj: dict) -> None:
 
 # ── Health endpoints ──────────────────────────────────────────────────────────
 
+def _serverless_durable_database_missing() -> bool:
+    """A Vercel/Lambda payment handler must never accept revenue into /tmp SQLite.
+
+    The API and the independent fulfillment worker require the same durable
+    database. A successful ephemeral INSERT is not a persisted payment receipt.
+    """
+    if not (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME")):
+        return False
+    configured = (os.getenv("DATABASE_URL") or "").strip().lower()
+    return not configured.startswith((
+        "postgres://",
+        "postgresql://",
+        "postgresql+psycopg://",
+        "postgresql+psycopg2://",
+    ))
+
+
 _start_time = time.time()
 
 
@@ -246,6 +263,8 @@ def readyz():
     to serve traffic (Stripe key set, DB reachable).
     """
     issues: list[str] = []
+    if _serverless_durable_database_missing():
+        issues.append("Durable PostgreSQL DATABASE_URL required on serverless billing API")
     s = get_settings()
 
     if not s.stripe_secret_key:
@@ -288,6 +307,9 @@ async def create_checkout_session(
     plan: Optional[str] = Query(default=None),
     email: Optional[str] = Query(default=None),
 ):
+    if _serverless_durable_database_missing():
+        raise HTTPException(status_code=503, detail="Durable billing database not configured")
+
     body: dict[str, Any] = {}
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -344,6 +366,8 @@ async def create_checkout_session(
 
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request, background: BackgroundTasks):
+    if _serverless_durable_database_missing():
+        raise HTTPException(status_code=503, detail="Durable billing database not configured")
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
     # Read the webhook secret fresh each call so test env-var overrides work.
